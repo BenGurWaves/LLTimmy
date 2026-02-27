@@ -256,7 +256,9 @@ class AgentCore:
             self._transparency_log_path.parent.mkdir(parents=True, exist_ok=True)
             # Keep last 200 entries
             entries = self._transparency_log[-200:]
-            self._transparency_log_path.write_text(json.dumps(entries, indent=2, ensure_ascii=False))
+            tmp = self._transparency_log_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(entries, indent=2, ensure_ascii=False))
+            tmp.replace(self._transparency_log_path)
         except Exception as e:
             logger.error("Failed to save transparency log: %s", e)
 
@@ -1229,14 +1231,17 @@ class AgentCore:
             if self.scheduler:
                 today_events = self.scheduler.get_events_for_date(today)
                 upcoming = self.scheduler.get_upcoming(limit=5)
-                triggered = self.scheduler.check_due()
                 sections.append(f"\n### Calendar")
                 sections.append(f"- **Today's events**: {len(today_events)}")
                 sections.append(f"- **Upcoming**: {len(upcoming)}")
-                if triggered:
-                    sections.append(f"- **Just triggered**: {len(triggered)}")
-                    for t in triggered:
-                        sections.append(f"  - {t.get('title', 'Untitled')} (was due {t.get('due', 'N/A')[:16]})")
+                # Read-only peek — don't mutate event state from debrief
+                due_now = [e for e in self.scheduler.events
+                           if e.get("status") == "pending"
+                           and datetime.fromisoformat(e["due"]) <= datetime.now()]
+                if due_now:
+                    sections.append(f"- **Due now**: {len(due_now)}")
+                    for t in due_now:
+                        sections.append(f"  - {t.get('title', 'Untitled')} (due {t.get('due', 'N/A')[:16]})")
                 for e in upcoming[:3]:
                     sections.append(f"  - {e.get('due', '')[:16]} — {e.get('title', 'Untitled')}")
 
@@ -1347,9 +1352,9 @@ class AgentCore:
 
         if reset_calendar and self.scheduler:
             try:
-                cal_path = Path.home() / "LLTimmy" / "memory" / "calendar.json"
-                if cal_path.exists():
-                    cal_path.write_text("[]")
+                with self.scheduler._lock:
+                    self.scheduler.events.clear()
+                    self.scheduler._save()
                 results.append("Calendar: all events cleared")
             except Exception as e:
                 results.append(f"Calendar reset error: {e}")
@@ -1388,7 +1393,9 @@ class AgentCore:
             except Exception:
                 branches = {}
         branches[branch_id] = branch
-        branches_file.write_text(json.dumps(branches, indent=2, ensure_ascii=False))
+        tmp = branches_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(branches, indent=2, ensure_ascii=False))
+        tmp.replace(branches_file)
         logger.info(f"Conversation branched: {branch_id} ({len(self.conversation_history)} messages)")
         return branch
 
@@ -1436,7 +1443,9 @@ class AgentCore:
             branches = json.loads(branches_file.read_text())
             if branch_id in branches:
                 del branches[branch_id]
-                branches_file.write_text(json.dumps(branches, indent=2, ensure_ascii=False))
+                tmp = branches_file.with_suffix(".tmp")
+                tmp.write_text(json.dumps(branches, indent=2, ensure_ascii=False))
+                tmp.replace(branches_file)
                 return True
             return False
         except Exception:

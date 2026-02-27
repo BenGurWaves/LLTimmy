@@ -25,6 +25,7 @@ from datetime import datetime, date
 from typing import List, Dict, Optional
 
 import customtkinter as ctk
+from tkinter import filedialog
 from PIL import Image, ImageDraw
 
 # ---------------------------------------------------------------------------
@@ -81,21 +82,21 @@ VENV_PYTHON = str(_venv_path) if _venv_path.exists() else sys.executable
 # ═══════════════════════════════════════════════════════════════════════════
 # Quiet Luxury Color Palette
 # ═══════════════════════════════════════════════════════════════════════════
-C_BG         = "#0b0b0b"    # Deep matte charcoal — the canvas
-C_SURFACE    = "#131313"    # Panel / sidebar surface
-C_SURFACE_2  = "#1a1a1a"    # Elevated surface (cards, hovers)
-C_SURFACE_3  = "#222222"    # Hover / active states
-C_BORDER     = "#1c1c1c"    # Barely-visible border (~#ffffff08 equivalent on dark)
-C_BORDER_VIS = "#282828"    # Slightly more visible border for inputs
-C_ACCENT     = "#ffb700"    # Warm amber/gold — used sparingly
-C_ACCENT_DIM = "#2a2000"    # Dim amber for subtle bg hints
-C_ACCENT_HOV = "#e6a500"    # Accent hover
-C_TEXT       = "#f0f0f2"    # Primary text — not pure white
-C_TEXT_SEC   = "#86868b"    # Secondary text
-C_TEXT_MUTED = "#48484a"    # Muted / disabled
-C_GREEN      = "#30d158"    # Online / success
-C_RED        = "#ff453a"    # Error / failure
-C_INPUT_BG   = "#161616"    # Input field background
+C_BG         = "#0d0d0d"    # Deep matte charcoal — the canvas
+C_SURFACE    = "#141414"    # Panel / sidebar surface
+C_SURFACE_2  = "#1c1c1c"    # Elevated surface (cards, hovers)
+C_SURFACE_3  = "#242424"    # Hover / active states
+C_BORDER     = "#1e1e1e"    # Barely-visible border
+C_BORDER_VIS = "#2a2a2a"    # Slightly more visible border for inputs
+C_ACCENT     = "#e8c46b"    # Soft pastel amber/gold — quiet luxury
+C_ACCENT_DIM = "#221e10"    # Dim amber for subtle bg hints
+C_ACCENT_HOV = "#d4b05a"    # Accent hover — muted
+C_TEXT       = "#ededef"    # Primary text — warm off-white
+C_TEXT_SEC   = "#7c7c82"    # Secondary text
+C_TEXT_MUTED = "#404044"    # Muted / disabled
+C_GREEN      = "#5cbf6e"    # Online / success — softer green
+C_RED        = "#e05c54"    # Error / failure — softer red
+C_INPUT_BG   = "#171717"    # Input field background
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -113,7 +114,6 @@ def _run_loop():
 
 
 _loop_thread = threading.Thread(target=_run_loop, daemon=True)
-_loop_thread.start()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -187,11 +187,11 @@ class LLTimmyApp(ctk.CTk):
         self._build_chat_area()
 
     # ══════════════════════════════════════════════════════════════════
-    #  SIDEBAR — 280 px, deep surface
+    #  SIDEBAR — 250 px, generous breathing room
     # ══════════════════════════════════════════════════════════════════
     def _build_sidebar(self):
         sb = ctk.CTkFrame(
-            self._main_frame, width=280, fg_color=C_SURFACE,
+            self._main_frame, width=250, fg_color=C_SURFACE,
             corner_radius=0, border_width=1, border_color=C_BORDER,
         )
         sb.grid(row=0, column=0, sticky="nsew")
@@ -200,8 +200,8 @@ class LLTimmyApp(ctk.CTk):
         self._sidebar = sb
 
         # ── Brand header ──────────────────────────────────────────────
-        hdr = ctk.CTkFrame(sb, fg_color="transparent", height=60)
-        hdr.grid(row=0, column=0, sticky="ew", padx=20, pady=(24, 4))
+        hdr = ctk.CTkFrame(sb, fg_color="transparent", height=52)
+        hdr.grid(row=0, column=0, sticky="ew", padx=18, pady=(20, 4))
         hdr.grid_columnconfigure(1, weight=1)
 
         brand = ctk.CTkFrame(hdr, fg_color="transparent")
@@ -209,26 +209,26 @@ class LLTimmyApp(ctk.CTk):
 
         ctk.CTkLabel(
             brand, text="LLTimmy",
-            font=("SF Pro Display", 24, "bold"), text_color=C_TEXT,
+            font=("SF Pro Display", 20, "bold"), text_color=C_TEXT,
         ).pack(side="left")
 
-        # Gold status dot
+        # Soft amber status dot
         ctk.CTkLabel(
-            brand, text="\u25cf", font=("SF Pro", 8),
+            brand, text="\u25cf", font=("SF Pro", 7),
             text_color=C_ACCENT, width=10,
-        ).pack(side="left", padx=(8, 0), pady=(2, 0))
+        ).pack(side="left", padx=(6, 0), pady=(2, 0))
 
         # New-session button
         ctk.CTkButton(
-            hdr, text="+", width=32, height=32,
+            hdr, text="+", width=28, height=28,
             fg_color=C_SURFACE_2, hover_color=C_SURFACE_3,
-            text_color=C_TEXT_SEC, font=("SF Pro", 16),
-            corner_radius=16, command=self._new_session,
+            text_color=C_TEXT_SEC, font=("SF Pro", 14),
+            corner_radius=14, command=self._new_session,
         ).grid(row=0, column=1, sticky="e")
 
         # ── Agent status cards ────────────────────────────────────────
         cards = ctk.CTkFrame(sb, fg_color="transparent")
-        cards.grid(row=1, column=0, sticky="ew", padx=16, pady=(8, 4))
+        cards.grid(row=1, column=0, sticky="ew", padx=14, pady=(10, 4))
 
         self._agent_card = self._make_agent_card(
             cards, "Agent Timmy", "Ready", C_ACCENT, active=True)
@@ -239,35 +239,35 @@ class LLTimmyApp(ctk.CTk):
         self._doctor_card.pack(fill="x")
 
         # ── Tab row: Tasks · Memory · Calendar  +  ⋯ ─────────────────
-        tab_row = ctk.CTkFrame(sb, fg_color="transparent", height=36)
-        tab_row.grid(row=2, column=0, sticky="ew", padx=16, pady=(16, 0))
+        tab_row = ctk.CTkFrame(sb, fg_color="transparent", height=32)
+        tab_row.grid(row=2, column=0, sticky="ew", padx=14, pady=(14, 0))
 
         self._tab_buttons = {}
         for name in ("Tasks", "Memory", "Calendar"):
             active = name == "Tasks"
             btn = ctk.CTkButton(
-                tab_row, text=name, width=72, height=30,
+                tab_row, text=name, width=62, height=26,
                 fg_color=C_ACCENT if active else "transparent",
                 hover_color=C_SURFACE_2,
                 text_color=C_BG if active else C_TEXT_SEC,
-                font=("SF Pro", 12, "bold" if active else "normal"),
-                corner_radius=15,
+                font=("SF Pro", 11, "bold" if active else "normal"),
+                corner_radius=13,
                 command=lambda t=name: self._switch_tab(t),
             )
-            btn.pack(side="left", padx=(0, 4))
+            btn.pack(side="left", padx=(0, 3))
             self._tab_buttons[name] = btn
 
         # Three-dot menu
         ctk.CTkButton(
-            tab_row, text="\u22ef", width=30, height=30,
+            tab_row, text="\u22ef", width=26, height=26,
             fg_color="transparent", hover_color=C_SURFACE_2,
-            text_color=C_TEXT_SEC, font=("SF Pro", 16),
-            corner_radius=15, command=self._show_extended_menu,
+            text_color=C_TEXT_SEC, font=("SF Pro", 14),
+            corner_radius=13, command=self._show_extended_menu,
         ).pack(side="right")
 
         # ── Tab content area ──────────────────────────────────────────
         self._tab_content = ctk.CTkFrame(sb, fg_color="transparent")
-        self._tab_content.grid(row=3, column=0, sticky="nsew", padx=16, pady=(10, 8))
+        self._tab_content.grid(row=3, column=0, sticky="nsew", padx=14, pady=(12, 8))
 
         self._tabs = {}
         self._build_tasks_tab()
@@ -280,14 +280,14 @@ class LLTimmyApp(ctk.CTk):
         self._show_tab("Tasks")
 
         # ── Bottom: quick-add + clear ─────────────────────────────────
-        btm = ctk.CTkFrame(sb, fg_color="transparent", height=64)
-        btm.grid(row=4, column=0, sticky="sew", padx=16, pady=(0, 16))
+        btm = ctk.CTkFrame(sb, fg_color="transparent", height=56)
+        btm.grid(row=4, column=0, sticky="sew", padx=14, pady=(0, 14))
 
         self._quick_add = ctk.CTkEntry(
             btm, placeholder_text="Quick add task\u2026",
             fg_color=C_INPUT_BG, border_color=C_BORDER_VIS,
-            text_color=C_TEXT, font=("SF Pro", 12), height=34,
-            corner_radius=12,
+            text_color=C_TEXT, font=("SF Pro", 11), height=30,
+            corner_radius=14,
         )
         self._quick_add.pack(fill="x", pady=(0, 6))
         self._quick_add.bind("<Return>", self._quick_add_task)
@@ -305,26 +305,26 @@ class LLTimmyApp(ctk.CTk):
         card = ctk.CTkFrame(
             parent,
             fg_color=C_ACCENT_DIM if active else C_SURFACE_2,
-            corner_radius=12, height=48, **kw,
+            corner_radius=14, height=42, **kw,
         )
         card.pack_propagate(False)
 
         inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="both", expand=True, padx=14, pady=8)
+        inner.pack(fill="both", expand=True, padx=12, pady=6)
 
         ctk.CTkLabel(
-            inner, text="\u25cf", font=("SF Pro", 8),
-            text_color=dot_color, width=12,
-        ).pack(side="left", padx=(0, 8))
+            inner, text="\u25cf", font=("SF Pro", 7),
+            text_color=dot_color, width=10,
+        ).pack(side="left", padx=(0, 7))
 
         info = ctk.CTkFrame(inner, fg_color="transparent")
         info.pack(side="left", fill="x", expand=True)
         ctk.CTkLabel(
-            info, text=name, font=("SF Pro", 13, "bold"),
+            info, text=name, font=("SF Pro", 12, "bold"),
             text_color=C_TEXT, anchor="w",
         ).pack(anchor="w")
         ctk.CTkLabel(
-            info, text=status_text, font=("SF Pro", 10),
+            info, text=status_text, font=("SF Pro", 9),
             text_color=C_TEXT_SEC, anchor="w",
         ).pack(anchor="w")
         return card
@@ -726,7 +726,12 @@ class LLTimmyApp(ctk.CTk):
             ).pack(pady=12)
             return
         try:
-            lines = log_path.read_text(encoding="utf-8").strip().split("\n")[-20:]
+            with open(log_path, "rb") as f:
+                f.seek(0, 2)
+                sz = f.tell()
+                f.seek(max(0, sz - 32768))
+                tail = f.read().decode("utf-8", errors="ignore")
+            lines = tail.strip().split("\n")[-20:]
             for line in reversed(lines):
                 if not line.strip():
                     continue
@@ -776,7 +781,12 @@ class LLTimmyApp(ctk.CTk):
         self._console_text.delete("1.0", "end")
         if log_path.exists():
             try:
-                lines = log_path.read_text(encoding="utf-8").strip().split("\n")[-30:]
+                with open(log_path, "rb") as f:
+                    f.seek(0, 2)
+                    sz = f.tell()
+                    f.seek(max(0, sz - 32768))
+                    tail = f.read().decode("utf-8", errors="ignore")
+                lines = tail.strip().split("\n")[-30:]
                 self._console_text.insert("end", "\n".join(lines))
             except Exception:
                 pass
@@ -793,7 +803,7 @@ class LLTimmyApp(ctk.CTk):
 
         # ── Header bar ────────────────────────────────────────────────
         hdr = ctk.CTkFrame(
-            chat, fg_color=C_SURFACE, height=56,
+            chat, fg_color=C_SURFACE, height=48,
             corner_radius=0, border_width=0,
         )
         hdr.grid(row=0, column=0, sticky="ew")
@@ -801,11 +811,11 @@ class LLTimmyApp(ctk.CTk):
         hdr.grid_columnconfigure(1, weight=1)
 
         left = ctk.CTkFrame(hdr, fg_color="transparent")
-        left.grid(row=0, column=0, sticky="w", padx=20, pady=12)
+        left.grid(row=0, column=0, sticky="w", padx=24, pady=10)
 
         ctk.CTkLabel(
             left, text="Secure Session",
-            font=("SF Pro Display", 15, "bold"), text_color=C_TEXT,
+            font=("SF Pro Display", 13, "bold"), text_color=C_TEXT,
         ).pack(side="left")
 
         right = ctk.CTkFrame(hdr, fg_color="transparent")
@@ -864,68 +874,88 @@ class LLTimmyApp(ctk.CTk):
         tb.tag_configure("sep", font=("SF Pro", 2))
 
         # ── Suggestion chips ──────────────────────────────────────────
-        sug = ctk.CTkFrame(chat, fg_color="transparent", height=40)
-        sug.grid(row=2, column=0, sticky="ew", padx=24, pady=(10, 4))
+        sug = ctk.CTkFrame(chat, fg_color="transparent", height=34)
+        sug.grid(row=2, column=0, sticky="ew", padx=28, pady=(8, 4))
 
         for text in ("Summarize tasks", "Check my schedule", "Analyze performance"):
             ctk.CTkButton(
-                sug, text=text, height=30,
+                sug, text=text, height=26,
                 fg_color=C_SURFACE_2, hover_color=C_SURFACE_3,
-                text_color=C_TEXT_SEC, font=("SF Pro", 11),
-                corner_radius=15, border_width=1, border_color=C_BORDER,
+                text_color=C_TEXT_SEC, font=("SF Pro", 10),
+                corner_radius=13, border_width=1, border_color=C_BORDER,
                 command=lambda t=text: self._send_suggestion(t),
-            ).pack(side="left", padx=(0, 8))
+            ).pack(side="left", padx=(0, 6))
 
         # ── Input bar ─────────────────────────────────────────────────
         inp = ctk.CTkFrame(
             chat, fg_color=C_SURFACE,
-            corner_radius=24, border_width=1, border_color=C_BORDER,
-            height=56,
+            corner_radius=22, border_width=1, border_color=C_BORDER,
+            height=50,
         )
-        inp.grid(row=3, column=0, sticky="ew", padx=24, pady=(8, 6))
+        inp.grid(row=3, column=0, sticky="ew", padx=28, pady=(8, 6))
         inp.grid_columnconfigure(1, weight=1)
 
         # Left tool icons
         tools_f = ctk.CTkFrame(inp, fg_color="transparent")
-        tools_f.grid(row=0, column=0, padx=(16, 4), pady=10)
+        tools_f.grid(row=0, column=0, padx=(14, 4), pady=8)
 
-        for icon, tip in (("\U0001f4ce", "Attach"), ("\U0001f3a4", "Voice")):
-            b = ctk.CTkButton(
-                tools_f, text=icon, width=28, height=28,
-                fg_color="transparent", hover_color=C_SURFACE_2,
-                text_color=C_TEXT_MUTED, font=("SF Pro", 14),
-                corner_radius=14,
-            )
-            b.pack(side="left", padx=1)
-            if icon == "\U0001f3a4":
-                b.configure(command=self._toggle_voice)
+        # Attach file button (real file picker)
+        self._attach_btn = ctk.CTkButton(
+            tools_f, text="\U0001f4ce", width=26, height=26,
+            fg_color="transparent", hover_color=C_SURFACE_2,
+            text_color=C_TEXT_MUTED, font=("SF Pro", 13),
+            corner_radius=13, command=self._attach_file,
+        )
+        self._attach_btn.pack(side="left", padx=1)
+
+        # Microphone button (real speech recognition)
+        self._mic_btn = ctk.CTkButton(
+            tools_f, text="\U0001f3a4", width=26, height=26,
+            fg_color="transparent", hover_color=C_SURFACE_2,
+            text_color=C_TEXT_MUTED, font=("SF Pro", 13),
+            corner_radius=13, command=self._toggle_voice,
+        )
+        self._mic_btn.pack(side="left", padx=1)
+        self._mic_recording = False
+
+        # Trace / Reasoning button
+        self._trace_btn = ctk.CTkButton(
+            tools_f, text="\u2699", width=26, height=26,
+            fg_color="transparent", hover_color=C_SURFACE_2,
+            text_color=C_TEXT_MUTED, font=("SF Pro", 13),
+            corner_radius=13, command=self._toggle_trace_panel,
+        )
+        self._trace_btn.pack(side="left", padx=1)
 
         # Text entry
         self._msg_input = ctk.CTkEntry(
             inp,
             placeholder_text="Message Timmy\u2026",
             fg_color="transparent", border_width=0,
-            text_color=C_TEXT, font=("SF Pro", 14), height=36,
+            text_color=C_TEXT, font=("SF Pro", 13), height=34,
         )
-        self._msg_input.grid(row=0, column=1, sticky="ew", pady=10)
+        self._msg_input.grid(row=0, column=1, sticky="ew", pady=8)
         self._msg_input.bind("<Return>", self._on_send)
+
+        # Pending file attachment display
+        self._attached_file = None
 
         # Right: jury + send
         right_tools = ctk.CTkFrame(inp, fg_color="transparent")
-        right_tools.grid(row=0, column=2, padx=(4, 12), pady=10)
+        right_tools.grid(row=0, column=2, padx=(4, 10), pady=8)
 
         ctk.CTkButton(
-            right_tools, text="\u2696", width=30, height=30,
+            right_tools, text="\u2696", width=28, height=28,
             fg_color="transparent", hover_color=C_SURFACE_2,
-            text_color=C_ACCENT, font=("SF Pro", 16),
-            corner_radius=15, command=self._jury_send,
+            text_color=C_ACCENT, font=("SF Pro", 14),
+            corner_radius=14, command=self._jury_send,
         ).pack(side="left", padx=2)
 
         ctk.CTkButton(
-            right_tools, text="\u27a4", width=38, height=38,
+            right_tools, text="\u27a4", width=34, height=34,
             fg_color=C_ACCENT, hover_color=C_ACCENT_HOV,
-            text_color=C_BG, font=("SF Pro", 16, "bold"),
-            corner_radius=19, command=lambda: self._on_send(None),
+            text_color=C_BG, font=("SF Pro", 14, "bold"),
+            corner_radius=17, command=lambda: self._on_send(None),
         ).pack(side="left", padx=(4, 0))
 
         # ── Footer ────────────────────────────────────────────────────
@@ -1000,6 +1030,12 @@ class LLTimmyApp(ctk.CTk):
 
     def _toggle_reasoning(self):
         self._show_reasoning = self._reasoning_var.get()
+        if self._show_reasoning:
+            self._trace_btn.configure(text_color=C_ACCENT)
+            self._show_tab("Trace")
+        else:
+            self._trace_btn.configure(text_color=C_TEXT_MUTED)
+            self._show_tab("Tasks")
         self._render_chat()
 
     # ══════════════════════════════════════════════════════════════════
@@ -1010,18 +1046,26 @@ class LLTimmyApp(ctk.CTk):
         if not text or self._agent_working:
             return
         self._msg_input.delete(0, "end")
+        # Include attached file info if present
+        file_paths = None
+        if self._attached_file:
+            file_paths = [self._attached_file]
+            fname = Path(self._attached_file).name
+            text = f"{text}\n\n[Attached: {fname}]"
+            self._attached_file = None
+            self._attach_btn.configure(text_color=C_TEXT_MUTED)
         self._append_message("user", text)
         self._set_working(True)
-        threading.Thread(target=self._run_agent, args=(text,), daemon=True).start()
+        threading.Thread(target=self._run_agent, args=(text, file_paths), daemon=True).start()
 
-    def _run_agent(self, user_message: str):
+    def _run_agent(self, user_message: str, file_paths=None):
         """Run agent ReAct loop with streaming. BUG-FIX: agent.run() yields
         the full accumulated response so far, not deltas — use = not +=."""
         full_response = ""
         try:
             async def _do():
                 nonlocal full_response
-                async for chunk in agent.run(user_message):
+                async for chunk in agent.run(user_message, file_paths=file_paths):
                     # CRITICAL: agent.run() yields accumulated text, not deltas
                     full_response = chunk
                     now = time.time()
@@ -1067,6 +1111,9 @@ class LLTimmyApp(ctk.CTk):
         self._chat_display.see("end")
 
     def _finalize_response(self, full_text):
+        # Guard against duplicate calls from concurrent _run_agent / _run_jury
+        if not self._agent_working:
+            return
         if self._chat_history and self._chat_history[-1]["role"] == "assistant":
             self._chat_history[-1]["content"] = full_text
         else:
@@ -1118,17 +1165,78 @@ class LLTimmyApp(ctk.CTk):
         self.after(0, self._finalize_response, full)
 
     # ══════════════════════════════════════════════════════════════════
-    #  VOICE (macOS dictation trigger)
+    #  ATTACH FILE (real file picker dialog)
+    # ══════════════════════════════════════════════════════════════════
+    def _attach_file(self):
+        path = filedialog.askopenfilename(
+            title="Attach File",
+            filetypes=[
+                ("All Files", "*.*"),
+                ("Images", "*.png *.jpg *.jpeg *.gif *.webp"),
+                ("Text", "*.txt *.md *.py *.json *.csv"),
+            ],
+        )
+        if path:
+            self._attached_file = path
+            fname = Path(path).name
+            self._attach_btn.configure(text_color=C_ACCENT)
+            self._msg_input.delete(0, "end")
+            self._msg_input.insert(0, f"[Attached: {fname}] ")
+            logger.info("File attached: %s", path)
+
+    # ══════════════════════════════════════════════════════════════════
+    #  VOICE (macOS speech recognition via osascript)
     # ══════════════════════════════════════════════════════════════════
     def _toggle_voice(self):
+        if self._mic_recording:
+            self._mic_recording = False
+            self._mic_btn.configure(text_color=C_TEXT_MUTED)
+            return
+        self._mic_recording = True
+        self._mic_btn.configure(text_color=C_RED)
+        threading.Thread(target=self._do_voice_capture, daemon=True).start()
+
+    def _do_voice_capture(self):
+        """Use speech_recognition library if available, else macOS dictation."""
         try:
-            subprocess.Popen(
-                ["osascript", "-e",
-                 'tell application "System Events" to key code 63 using {command down}'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        except Exception:
-            pass
+            import speech_recognition as sr
+            recognizer = sr.Recognizer()
+            with sr.Microphone() as source:
+                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                logger.info("Listening for speech...")
+                audio = recognizer.listen(source, timeout=10, phrase_time_limit=30)
+            text = recognizer.recognize_google(audio)
+            self.after(0, lambda: self._insert_voice_text(text))
+        except ImportError:
+            # Inform user to install speech_recognition
+            self.after(0, lambda: self._insert_voice_text(
+                "[Voice: Install SpeechRecognition — pip install SpeechRecognition PyAudio]"
+            ))
+        except Exception as e:
+            logger.warning("Voice capture error: %s", e)
+            self.after(0, lambda: self._insert_voice_text(f"[Voice error: {e}]"))
+        finally:
+            self._mic_recording = False
+            self.after(0, lambda: self._mic_btn.configure(text_color=C_TEXT_MUTED))
+
+    def _insert_voice_text(self, text):
+        self._msg_input.delete(0, "end")
+        self._msg_input.insert(0, text)
+
+    # ══════════════════════════════════════════════════════════════════
+    #  TRACE PANEL (reasoning trace toggle — opens sidebar Trace tab)
+    # ══════════════════════════════════════════════════════════════════
+    def _toggle_trace_panel(self):
+        """Toggle the Trace sidebar tab and reasoning visibility in chat."""
+        self._show_reasoning = not self._show_reasoning
+        self._reasoning_var.set(self._show_reasoning)
+        if self._show_reasoning:
+            self._trace_btn.configure(text_color=C_ACCENT)
+            self._show_tab("Trace")
+        else:
+            self._trace_btn.configure(text_color=C_TEXT_MUTED)
+            self._show_tab("Tasks")
+        self._render_chat()
 
     # ══════════════════════════════════════════════════════════════════
     #  MODEL MANAGEMENT
@@ -1262,6 +1370,7 @@ class LLTimmyApp(ctk.CTk):
 # Entry point
 # ═══════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
+    _loop_thread.start()
     app = LLTimmyApp()
     try:
         PID_FILE.write_text(str(os.getpid()))

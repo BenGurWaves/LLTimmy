@@ -388,7 +388,9 @@ class Doctor:
 
                 if action == "write":
                     target_path.parent.mkdir(parents=True, exist_ok=True)
-                    target_path.write_text(content, encoding="utf-8")
+                    tmp = target_path.with_suffix(target_path.suffix + ".tmp")
+                    tmp.write_text(content, encoding="utf-8")
+                    tmp.replace(target_path)
                 elif action == "append":
                     with open(target_path, "a", encoding="utf-8") as f:
                         f.write(content)

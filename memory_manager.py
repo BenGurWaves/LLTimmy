@@ -192,7 +192,9 @@ class ConsciousMemory:
                 "timestamp": datetime.now().isoformat(),
                 "metadata": metadata or {},
             })
-            path.write_text(json.dumps(messages, indent=2, ensure_ascii=False))
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(messages, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
             self._invalidate_cache()
 
     def load_current_day(self) -> List[Dict]:

@@ -758,7 +758,7 @@ class ToolsSystem:
             # Safety: reject scripts with sandbox-escape tokens
             BANNED = ("__", "import", "exec", "eval", "open", "subprocess", " os.",
                       "getattr", "setattr", "delattr", "globals", "locals", "compile",
-                      "vars", "type(", "bases", "subclasses", "mro", "builtins")
+                      "vars", "type", "bases", "subclasses", "mro", "builtins")
             if any(tok in script for tok in BANNED):
                 return "", "Script contains unsafe tokens — rejected."
             # Restricted evaluation — builtins disabled, only `resolve` in scope
