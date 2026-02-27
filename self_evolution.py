@@ -258,6 +258,15 @@ class SelfEvolution:
                 return imp
         return None
 
+    def reject_improvement(self, improvement_id: int) -> Optional[Dict]:
+        for imp in self.improvements:
+            if imp["id"] == improvement_id:
+                imp["status"] = "rejected"
+                imp["rejected_at"] = datetime.now().isoformat()
+                self._save_improvements()
+                return imp
+        return None
+
     # ---- Proactive Ideas (NEW: Timmy generates ideas for self-improvement) ----
     def add_idea(self, title: str, description: str, source: str = "idle_research", category: str = "general"):
         """Record an idea for self-improvement or new feature."""

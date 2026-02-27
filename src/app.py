@@ -73,6 +73,7 @@ agent = AgentCore(
     config=config, memory_manager=memory, tools_system=tools,
     scheduler=scheduler, task_mgr=task_mgr,
 )
+agent._evolution = evolution  # wire shared evolution instance for self-healing
 
 # Resolve venv Python path once for reuse
 _venv_path = BASE_DIR / ".venv" / "bin" / "python3"
@@ -135,6 +136,9 @@ class LLTimmyApp(ctk.CTk):
         self._current_tab = "Tasks"
         self._show_reasoning = True
         self._last_stream_update = 0.0
+        self._debug_visible = False
+        self._debug_entries: List[Dict] = []  # live debug feed
+        self._debug_lock = threading.Lock()
 
         # Load today's conversation
         self._load_chat_history()
@@ -181,10 +185,12 @@ class LLTimmyApp(ctk.CTk):
         self._main_frame = ctk.CTkFrame(self, fg_color=C_BG, corner_radius=0)
         self._main_frame.pack(fill="both", expand=True)
         self._main_frame.grid_columnconfigure(1, weight=1)
+        self._main_frame.grid_columnconfigure(2, weight=0, minsize=0)
         self._main_frame.grid_rowconfigure(0, weight=1)
 
         self._build_sidebar()
         self._build_chat_area()
+        self._build_debug_panel()
 
     # ══════════════════════════════════════════════════════════════════
     #  SIDEBAR — 250 px, generous breathing room
@@ -196,7 +202,7 @@ class LLTimmyApp(ctk.CTk):
         )
         sb.grid(row=0, column=0, sticky="nsew")
         sb.grid_propagate(False)
-        sb.grid_rowconfigure(3, weight=1)
+        sb.grid_rowconfigure(4, weight=1)
         self._sidebar = sb
 
         # ── Brand header ──────────────────────────────────────────────
@@ -265,9 +271,24 @@ class LLTimmyApp(ctk.CTk):
             corner_radius=13, command=self._show_extended_menu,
         ).pack(side="right")
 
+        # ── Raw Debug View toggle ──────────────────────────────────────
+        debug_row = ctk.CTkFrame(sb, fg_color="transparent", height=28)
+        debug_row.grid(row=3, column=0, sticky="ew", padx=18, pady=(8, 0))
+
+        self._debug_var = ctk.BooleanVar(master=self, value=False)
+        self._debug_switch = ctk.CTkSwitch(
+            debug_row, text="Raw Debug", variable=self._debug_var,
+            font=("SF Pro", 10), text_color=C_TEXT_SEC,
+            fg_color=C_SURFACE_2, progress_color=C_ACCENT,
+            button_color=C_TEXT_SEC, button_hover_color=C_TEXT,
+            width=34, height=16,
+            command=self._toggle_debug_panel,
+        )
+        self._debug_switch.pack(side="left")
+
         # ── Tab content area ──────────────────────────────────────────
         self._tab_content = ctk.CTkFrame(sb, fg_color="transparent")
-        self._tab_content.grid(row=3, column=0, sticky="nsew", padx=14, pady=(12, 8))
+        self._tab_content.grid(row=4, column=0, sticky="nsew", padx=14, pady=(12, 8))
 
         self._tabs = {}
         self._build_tasks_tab()
@@ -281,7 +302,7 @@ class LLTimmyApp(ctk.CTk):
 
         # ── Bottom: quick-add + clear ─────────────────────────────────
         btm = ctk.CTkFrame(sb, fg_color="transparent", height=56)
-        btm.grid(row=4, column=0, sticky="sew", padx=14, pady=(0, 14))
+        btm.grid(row=5, column=0, sticky="sew", padx=14, pady=(0, 14))
 
         self._quick_add = ctk.CTkEntry(
             btm, placeholder_text="Quick add task\u2026",
@@ -768,12 +789,68 @@ class LLTimmyApp(ctk.CTk):
     def _render_evolution(self):
         for w in self._evo_container.winfo_children():
             w.destroy()
+
+        # Pending improvements (staging area)
+        pending = evolution.get_pending_improvements()
+        if pending:
+            ctk.CTkLabel(
+                self._evo_container, text="Staging Area",
+                font=("SF Pro", 11, "bold"), text_color=C_ACCENT,
+            ).pack(anchor="w", padx=4, pady=(4, 6))
+
+            for imp in pending[:5]:
+                card = ctk.CTkFrame(
+                    self._evo_container, fg_color=C_SURFACE_2,
+                    corner_radius=10,
+                )
+                card.pack(fill="x", pady=(0, 4))
+                ctk.CTkLabel(
+                    card, text=f"#{imp['id']}: {imp['title'][:35]}",
+                    font=("SF Pro", 10, "bold"), text_color=C_TEXT,
+                    wraplength=200, justify="left",
+                ).pack(anchor="w", padx=8, pady=(6, 0))
+                ctk.CTkLabel(
+                    card, text=imp["description"][:80],
+                    font=("SF Mono", 9), text_color=C_TEXT_SEC,
+                    wraplength=200, justify="left",
+                ).pack(anchor="w", padx=8, pady=(2, 4))
+
+                btns = ctk.CTkFrame(card, fg_color="transparent")
+                btns.pack(fill="x", padx=8, pady=(0, 6))
+                ctk.CTkButton(
+                    btns, text="Approve", width=60, height=20,
+                    fg_color=C_GREEN, text_color=C_BG,
+                    font=("SF Pro", 9), corner_radius=10,
+                    command=lambda iid=imp["id"]: self._approve_evolution(iid),
+                ).pack(side="left", padx=(0, 4))
+                ctk.CTkButton(
+                    btns, text="Reject", width=60, height=20,
+                    fg_color=C_SURFACE_3, text_color=C_TEXT_SEC,
+                    font=("SF Pro", 9), corner_radius=10,
+                    command=lambda iid=imp["id"]: self._reject_evolution(iid),
+                ).pack(side="left")
+
+        # New ideas from idle research
+        ideas = evolution.get_new_ideas()
+        if ideas:
+            ctk.CTkLabel(
+                self._evo_container, text="Research Ideas",
+                font=("SF Pro", 11, "bold"), text_color=C_TEXT_SEC,
+            ).pack(anchor="w", padx=4, pady=(10, 4))
+            for idea in ideas[:5]:
+                ctk.CTkLabel(
+                    self._evo_container, text=f"  {idea['title'][:40]}",
+                    font=("SF Mono", 9), text_color=C_TEXT_SEC,
+                    wraplength=220, justify="left",
+                ).pack(anchor="w", padx=4)
+
+        # Overall summary
         summary = evolution.get_evolution_summary()
         ctk.CTkLabel(
             self._evo_container, text=summary,
-            font=("SF Mono", 10), text_color=C_TEXT_SEC,
-            wraplength=240, justify="left",
-        ).pack(fill="x", padx=4, pady=4)
+            font=("SF Mono", 9), text_color=C_TEXT_MUTED,
+            wraplength=220, justify="left",
+        ).pack(fill="x", padx=4, pady=(10, 4))
 
     def _render_console(self):
         log_path = BASE_DIR / "tim_audit.log"
@@ -845,31 +922,31 @@ class LLTimmyApp(ctk.CTk):
         # ── Chat display ──────────────────────────────────────────────
         self._chat_display = ctk.CTkTextbox(
             chat, fg_color=C_BG, text_color=C_TEXT,
-            font=("SF Pro", 14), corner_radius=0, border_width=0,
-            wrap="word", state="disabled", spacing3=6,
+            font=("SF Pro", 12), corner_radius=0, border_width=0,
+            wrap="word", state="disabled", spacing3=5,
         )
         self._chat_display.grid(row=1, column=0, sticky="nsew", padx=24, pady=(12, 0))
 
         # Text tags for message styling
         tb = self._chat_display._textbox
         tb.tag_configure("user_name",
-                         foreground=C_TEXT, font=("SF Pro Display", 12, "bold"),
-                         spacing1=12)
+                         foreground=C_TEXT, font=("SF Pro Display", 11, "bold"),
+                         spacing1=10)
         tb.tag_configure("bot_name",
-                         foreground=C_ACCENT, font=("SF Pro Display", 12, "bold"),
-                         spacing1=12)
+                         foreground=C_ACCENT, font=("SF Pro Display", 11, "bold"),
+                         spacing1=10)
         tb.tag_configure("timestamp",
                          foreground=C_TEXT_MUTED, font=("SF Mono", 9))
         tb.tag_configure("user_msg",
-                         foreground=C_TEXT, font=("SF Pro", 14),
-                         lmargin1=4, lmargin2=4, spacing1=4, spacing3=6)
+                         foreground=C_TEXT, font=("SF Pro", 12),
+                         lmargin1=4, lmargin2=4, spacing1=3, spacing3=5)
         tb.tag_configure("bot_msg",
-                         foreground="#e8e8ea", font=("SF Pro", 14),
-                         lmargin1=4, lmargin2=4, spacing1=4, spacing3=6)
+                         foreground="#e0e0e2", font=("SF Pro", 12),
+                         lmargin1=4, lmargin2=4, spacing1=3, spacing3=5)
         tb.tag_configure("error_msg",
-                         foreground=C_RED, font=("SF Pro", 13))
+                         foreground=C_RED, font=("SF Pro", 12))
         tb.tag_configure("dim_msg",
-                         foreground=C_TEXT_MUTED, font=("SF Mono", 11),
+                         foreground=C_TEXT_MUTED, font=("SF Mono", 10),
                          lmargin1=4, lmargin2=4, spacing1=2, spacing3=2)
         tb.tag_configure("sep", font=("SF Pro", 2))
 
@@ -976,6 +1053,143 @@ class LLTimmyApp(ctk.CTk):
         self._render_chat()
 
     # ══════════════════════════════════════════════════════════════════
+    #  RAW DEBUG VIEW — right panel
+    # ══════════════════════════════════════════════════════════════════
+    def _build_debug_panel(self):
+        """Right-side debug panel showing live thoughts, tool calls, etc."""
+        self._debug_panel = ctk.CTkFrame(
+            self._main_frame, width=320, fg_color=C_SURFACE,
+            corner_radius=0, border_width=1, border_color=C_BORDER,
+        )
+        # Not gridded initially — shown/hidden by toggle
+        self._debug_panel.grid_propagate(False)
+
+        # Header
+        dhdr = ctk.CTkFrame(self._debug_panel, fg_color="transparent", height=40)
+        dhdr.pack(fill="x", padx=14, pady=(14, 4))
+
+        ctk.CTkLabel(
+            dhdr, text="Raw Debug View",
+            font=("SF Pro Display", 13, "bold"), text_color=C_ACCENT,
+        ).pack(side="left")
+
+        ctk.CTkButton(
+            dhdr, text="Clear", width=44, height=22,
+            fg_color=C_SURFACE_2, hover_color=C_SURFACE_3,
+            text_color=C_TEXT_SEC, font=("SF Mono", 9),
+            corner_radius=11, command=self._clear_debug,
+        ).pack(side="right")
+
+        # Debug content — scrollable textbox
+        self._debug_text = ctk.CTkTextbox(
+            self._debug_panel, fg_color=C_BG,
+            text_color=C_GREEN, font=("SF Mono", 10),
+            corner_radius=8, border_width=1, border_color=C_BORDER,
+            wrap="word", state="disabled",
+        )
+        self._debug_text.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+
+        # Text tags for debug entries
+        dtb = self._debug_text._textbox
+        dtb.tag_configure("dbg_tool",
+                          foreground=C_ACCENT, font=("SF Mono", 10, "bold"))
+        dtb.tag_configure("dbg_thought",
+                          foreground="#8888cc", font=("SF Mono", 10, "italic"))
+        dtb.tag_configure("dbg_result",
+                          foreground=C_TEXT_SEC, font=("SF Mono", 9))
+        dtb.tag_configure("dbg_time",
+                          foreground=C_TEXT_MUTED, font=("SF Mono", 8))
+        dtb.tag_configure("dbg_mem",
+                          foreground="#6bccaa", font=("SF Mono", 9))
+
+    def _toggle_debug_panel(self):
+        """Show/hide the right debug panel."""
+        self._debug_visible = self._debug_var.get()
+        if self._debug_visible:
+            self._debug_panel.grid(row=0, column=2, sticky="nsew")
+            self._refresh_debug()
+        else:
+            self._debug_panel.grid_forget()
+
+    def _clear_debug(self):
+        with self._debug_lock:
+            self._debug_entries.clear()
+        self._debug_text.configure(state="normal")
+        self._debug_text.delete("1.0", "end")
+        self._debug_text.configure(state="disabled")
+
+    def _push_debug(self, category: str, content: str):
+        """Add a debug entry (called from streaming/agent callbacks)."""
+        ts = datetime.now().strftime("%H:%M:%S")
+        entry = {"ts": ts, "cat": category, "content": content}
+        with self._debug_lock:
+            self._debug_entries.append(entry)
+            if len(self._debug_entries) > 200:
+                self._debug_entries = self._debug_entries[-200:]
+        if self._debug_visible:
+            self.after(0, self._append_debug_entry, entry)
+
+    def _append_debug_entry(self, entry):
+        self._debug_text.configure(state="normal")
+        ts = entry["ts"]
+        cat = entry["cat"]
+        content = entry["content"]
+
+        tag_map = {
+            "tool": "dbg_tool", "thought": "dbg_thought",
+            "result": "dbg_result", "memory": "dbg_mem",
+        }
+        tag = tag_map.get(cat, "dbg_result")
+
+        self._debug_text.insert("end", f"[{ts}] ", "dbg_time")
+        self._debug_text.insert("end", f"{cat.upper()}: ", tag)
+        self._debug_text.insert("end", content[:300] + "\n", tag)
+        self._debug_text.configure(state="disabled")
+        self._debug_text.see("end")
+
+    def _refresh_debug(self):
+        """Refresh debug panel with recent audit log entries."""
+        self._debug_text.configure(state="normal")
+        self._debug_text.delete("1.0", "end")
+
+        # Load recent audit log entries
+        log_path = BASE_DIR / "tim_audit.log"
+        if log_path.exists():
+            try:
+                with open(log_path, "rb") as f:
+                    f.seek(0, 2)
+                    sz = f.tell()
+                    f.seek(max(0, sz - 16384))
+                    tail = f.read().decode("utf-8", errors="ignore")
+                lines = tail.strip().split("\n")[-30:]
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        ts = entry.get("ts", "")[-8:]  # HH:MM:SS
+                        tool = entry.get("tool", "?")
+                        result = entry.get("result", "")[:200]
+                        self._debug_text.insert("end", f"[{ts}] ", "dbg_time")
+                        self._debug_text.insert("end", f"TOOL: {tool}\n", "dbg_tool")
+                        self._debug_text.insert("end", f"  {result}\n", "dbg_result")
+                    except json.JSONDecodeError:
+                        pass
+            except Exception:
+                pass
+
+        # Also show subconscious search results if any
+        try:
+            stats = memory.get_memory_stats()
+            self._debug_text.insert("end", f"\nMEMORY: {stats['subconscious_entries']} entries, "
+                                    f"{stats['graph_entities']} graph nodes\n", "dbg_mem")
+        except Exception:
+            pass
+
+        self._debug_text.configure(state="disabled")
+        self._debug_text.see("end")
+
+    # ══════════════════════════════════════════════════════════════════
     #  CHAT RENDERING
     # ══════════════════════════════════════════════════════════════════
     def _render_chat(self):
@@ -1038,6 +1252,24 @@ class LLTimmyApp(ctk.CTk):
             self._show_tab("Tasks")
         self._render_chat()
 
+    def _approve_evolution(self, improvement_id):
+        """Approve a staged improvement and send to Doctor for application."""
+        imp = evolution.approve_improvement(improvement_id)
+        if imp:
+            # Notify Doctor to apply the change
+            try:
+                doctor_signal = BASE_DIR / "memory" / "doctor_apply.json"
+                doctor_signal.write_text(json.dumps(imp, indent=2))
+                self._push_debug("tool", f"Approved improvement #{improvement_id} -> Doctor")
+            except Exception as e:
+                logger.warning("Failed to signal Doctor: %s", e)
+        self._render_evolution()
+
+    def _reject_evolution(self, improvement_id):
+        """Reject a staged improvement."""
+        evolution.reject_improvement(improvement_id)
+        self._render_evolution()
+
     # ══════════════════════════════════════════════════════════════════
     #  SENDING MESSAGES + STREAMING (bug-fixed)
     # ══════════════════════════════════════════════════════════════════
@@ -1062,25 +1294,39 @@ class LLTimmyApp(ctk.CTk):
         """Run agent ReAct loop with streaming. BUG-FIX: agent.run() yields
         the full accumulated response so far, not deltas — use = not +=."""
         full_response = ""
+        self._push_debug("thought", f"Processing: {user_message[:80]}")
         try:
             async def _do():
                 nonlocal full_response
                 async for chunk in agent.run(user_message, file_paths=file_paths):
                     # CRITICAL: agent.run() yields accumulated text, not deltas
+                    prev_len = len(full_response)
                     full_response = chunk
                     now = time.time()
                     if now - self._last_stream_update > 0.1:
                         self._last_stream_update = now
-                        # Pass snapshot — don't let bg thread touch _chat_history
                         snapshot = full_response
                         self.after(0, self._update_streaming, snapshot)
+                        # Push new content to debug
+                        new_text = chunk[prev_len:]
+                        if new_text.strip():
+                            for line in new_text.split("\n"):
+                                s = line.strip()
+                                if s.startswith("Thought:"):
+                                    self._push_debug("thought", s[8:].strip())
+                                elif s.startswith("Action:"):
+                                    self._push_debug("tool", s[7:].strip())
+                                elif s.startswith("Observation:"):
+                                    self._push_debug("result", s[12:].strip())
 
             future = asyncio.run_coroutine_threadsafe(_do(), _loop)
             future.result(timeout=300)
         except Exception as e:
             full_response = f"Error: {e}"
             logger.error("Agent error: %s", e)
+            self._push_debug("result", f"ERROR: {e}")
 
+        self._push_debug("result", "Response complete")
         self.after(0, self._finalize_response, full_response)
 
     def _update_streaming(self, partial):
@@ -1313,11 +1559,13 @@ class LLTimmyApp(ctk.CTk):
         # Idle evolution
         evolution.start_idle_research(agent)
 
-        # Periodic sidebar refresh (every 30 s)
+        # Periodic sidebar + debug refresh (every 30 s)
         def _ui_loop():
             while True:
                 try:
                     self.after(0, lambda: self._refresh_tab(self._current_tab))
+                    if self._debug_visible:
+                        self.after(0, self._refresh_debug)
                 except Exception:
                     pass
                 time.sleep(30)

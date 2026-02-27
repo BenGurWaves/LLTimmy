@@ -220,6 +220,7 @@ class AgentCore:
         self._transparency_log_path = Path.home() / "LLTimmy" / "memory" / "transparency_log.json"
         self._transparency_log: List[Dict] = self._load_transparency_log()
         self._current_task_errors: List[Dict] = []  # Errors in the current task
+        self._evolution = None  # Set by app.py after construction for self-healing
 
     @staticmethod
     def _clean(name: str) -> str:
@@ -227,6 +228,27 @@ class AgentCore:
 
     def set_model(self, model_name: str):
         self.current_model = self._clean(model_name)
+
+    def _select_model_tier(self, message: str) -> str:
+        """Model tiering: use small model for routine, full model for complex.
+        Returns model name to use for this request."""
+        routine_patterns = [
+            "hi", "hello", "hey", "thanks", "thank you", "ok", "okay",
+            "what time", "what date", "who are you", "your name",
+        ]
+        msg_lower = message.lower().strip()
+        # Short greetings / simple Q&A -> use small model if available
+        if len(msg_lower) < 30 and any(p in msg_lower for p in routine_patterns):
+            # Use cached model list (refreshed max once per 60s)
+            now = time.time()
+            if not hasattr(self, "_cached_models") or now - self._cached_models_ts > 60:
+                self._cached_models = self.get_available_models()
+                self._cached_models_ts = now
+            small_models = [m for m in self._cached_models
+                            if any(s in m for s in ("1b", "3b", "7b", "8b", "0.5b", "1.5b"))]
+            if small_models:
+                return small_models[0]
+        return self.current_model
 
     def get_available_models(self) -> List[str]:
         try:
@@ -598,6 +620,12 @@ class AgentCore:
 
     # ---- Main run loop ----
     async def run(self, user_message: str, file_paths: List[str] = None) -> AsyncGenerator[str, None]:
+        # Model tiering: use small model for routine, restore after
+        tier_model = self._select_model_tier(user_message)
+        original_model = self.current_model
+        if tier_model != original_model:
+            self.current_model = tier_model
+            logger.info("Model tier: using %s for this request", tier_model)
         try:
             self._is_working = True
             self.memory.save_message("user", user_message)
@@ -814,6 +842,35 @@ class AgentCore:
 
         finally:
             self._is_working = False
+            # Restore original model after tiering
+            self.current_model = original_model
+            # Self-healing: check for repeated failures, propose fixes
+            self._check_self_healing()
+
+    def _check_self_healing(self):
+        """If the same tool fails 3+ times, propose a fix via evolution."""
+        if not self._evolution:
+            return
+        try:
+            recent = [e for e in self._transparency_log[-50:]
+                      if e.get("type") == "failure"]
+            tool_fails = {}
+            for e in recent:
+                t = e.get("tool", "unknown")
+                tool_fails[t] = tool_fails.get(t, 0) + 1
+            for tool_name, count in tool_fails.items():
+                if count >= 3:
+                    # Get last error specifically for THIS tool
+                    tool_errors = [e for e in recent if e.get("tool") == tool_name]
+                    last_err = tool_errors[-1].get("error_detail", "unknown") if tool_errors else "unknown"
+                    self._evolution.propose_improvement(
+                        f"Fix repeated {tool_name} failures",
+                        f"Tool '{tool_name}' has failed {count} times recently. "
+                        f"Last error: {last_err[:200]}",
+                        file_target="tools.py",
+                    )
+        except Exception:
+            pass
 
     def _update_profile(self, user_message: str):
         try:
