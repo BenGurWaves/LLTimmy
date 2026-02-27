@@ -169,7 +169,9 @@ class LLTimmyApp(ctk.CTk):
             "content": content,
             "ts": datetime.now().isoformat(),
         })
-        memory.save_message(role, content)
+        # Only save non-user messages here; agent_core.run() saves user messages
+        if role != "user":
+            memory.save_message(role, content)
         self._render_chat()
 
     # ──────────────────────────────────────────────────────────────────
@@ -1261,6 +1263,8 @@ class LLTimmyApp(ctk.CTk):
 # ═══════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     app = LLTimmyApp()
-    # Write PID only after successful initialization
-    PID_FILE.write_text(str(os.getpid()))
+    try:
+        PID_FILE.write_text(str(os.getpid()))
+    except Exception as e:
+        logging.getLogger(__name__).error("Cannot write PID file: %s", e)
     app.mainloop()

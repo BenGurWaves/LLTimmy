@@ -262,7 +262,7 @@ class SelfEvolution:
     def add_idea(self, title: str, description: str, source: str = "idle_research", category: str = "general"):
         """Record an idea for self-improvement or new feature."""
         idea = {
-            "id": len(self.ideas) + 1,
+            "id": max((i.get("id", 0) for i in self.ideas), default=0) + 1,
             "title": title,
             "description": description,
             "source": source,

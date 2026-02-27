@@ -362,8 +362,11 @@ class AgentCore:
                 self.active_goals = []
 
     def _save_goals(self):
-        gf = Path.home() / "LLTimmy" / "memory" / "active_goals.json"
-        gf.write_text(json.dumps(self.active_goals, indent=2))
+        try:
+            gf = Path.home() / "LLTimmy" / "memory" / "active_goals.json"
+            gf.write_text(json.dumps(self.active_goals, indent=2))
+        except Exception as e:
+            logger.error("Failed to save goals: %s", e)
 
     def add_goal(self, goal: str):
         self.active_goals.append(goal)
@@ -497,9 +500,9 @@ class AgentCore:
             cache_key = f"{tool_name}:{json.dumps(params, sort_keys=True)}"
             with self._lock:
                 cached = self._tool_cache.get(cache_key)
-            if cached and (time.time() - cached["ts"]) < self._cache_ttl:
-                logger.info(f"Tool cache hit: {tool_name}")
-                return cached["result"]
+                if cached and (time.time() - cached["ts"]) < self._cache_ttl:
+                    logger.info(f"Tool cache hit: {tool_name}")
+                    return cached["result"]
 
         for attempt in range(self.max_retries):
             try:
@@ -593,8 +596,8 @@ class AgentCore:
 
     # ---- Main run loop ----
     async def run(self, user_message: str, file_paths: List[str] = None) -> AsyncGenerator[str, None]:
-        self._is_working = True
         try:
+            self._is_working = True
             self.memory.save_message("user", user_message)
             subconscious = self.memory.get_subconscious_context(user_message)
 

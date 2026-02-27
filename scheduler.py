@@ -21,7 +21,7 @@ class Scheduler:
 
     def __init__(self):
         MEMORY_BASE.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.events: List[Dict] = self._load()
 
     def _load(self) -> List[Dict]:
@@ -33,10 +33,12 @@ class Scheduler:
         return []
 
     def _save(self):
-        CALENDAR_FILE.write_text(
+        tmp = CALENDAR_FILE.with_suffix(".tmp")
+        tmp.write_text(
             json.dumps(self.events, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        tmp.replace(CALENDAR_FILE)
 
     def add_event(
         self,

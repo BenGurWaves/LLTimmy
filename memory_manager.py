@@ -196,13 +196,14 @@ class ConsciousMemory:
             self._invalidate_cache()
 
     def load_current_day(self) -> List[Dict]:
-        today = date.today().isoformat()
-        if self._day_cache is not None and self._day_cache_date == today:
-            return self._day_cache
-        data = self._load(self._daily_path())
-        self._day_cache = data
-        self._day_cache_date = today
-        return data
+        with self._write_lock:
+            today = date.today().isoformat()
+            if self._day_cache is not None and self._day_cache_date == today:
+                return list(self._day_cache)
+            data = self._load(self._daily_path())
+            self._day_cache = data
+            self._day_cache_date = today
+            return data
 
     def clear_current_day(self):
         path = self._daily_path()

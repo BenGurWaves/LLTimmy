@@ -8,7 +8,7 @@ Blueprint:
 - Complexity scoring: line_count + keyword detection
 - Apply Routine: pure code for simple, LLM review for complex
 - Cross-upgrade: Timmy proposes Doctor changes, Doctor applies Timmy changes
-- No self-edits: Doctor cannot modify doctor.py; Timmy cannot modify main.py/agent_core.py
+- No self-edits: Doctor cannot modify doctor.py; Timmy cannot modify app.py/agent_core.py
 - Config: doctor_llm_enabled, doctor_model, complexity_threshold
 
 UI: Gradio on http://127.0.0.1:7861 (emergency chat + monitoring)
@@ -45,7 +45,7 @@ STATUS_FILE = Path("/tmp/timmy_status.json")
 # Protected files -- Doctor cannot edit these (self-protection)
 DOCTOR_PROTECTED = {"doctor.py", "run_doctor.sh"}
 # Timmy cannot edit these (protected by Doctor)
-TIMMY_PROTECTED = {"main.py", "agent_core.py"}
+TIMMY_PROTECTED = {"app.py", "agent_core.py"}
 # Banned paths for any update
 BANNED_PATHS = ["/System", "/Library", "/usr", "/bin", "/sbin"]
 
@@ -275,14 +275,13 @@ class Doctor:
             venv_python = str(BASE_DIR / ".venv" / "bin" / "python3")
             if not Path(venv_python).exists():
                 venv_python = sys.executable
-            stderr_fd = open(BASE_DIR / "timmy_stderr.log", "a")
-            proc = subprocess.Popen(
-                [venv_python, str(BASE_DIR / "src" / "app.py")],
-                cwd=str(BASE_DIR),
-                stdout=subprocess.DEVNULL,
-                stderr=stderr_fd,
-            )
-            stderr_fd.close()  # Child inherits the fd; parent must close its copy
+            with open(BASE_DIR / "timmy_stderr.log", "a") as stderr_fd:
+                proc = subprocess.Popen(
+                    [venv_python, str(BASE_DIR / "src" / "app.py")],
+                    cwd=str(BASE_DIR),
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_fd,
+                )
             msg = f"Timmy started (PID {proc.pid})"
             self.log(msg)
             self._write_project_log("Timmy Started", f"PID: {proc.pid}")
@@ -424,7 +423,7 @@ class Doctor:
         self._notify_timmy(f"Doctor applied update: {', '.join(applied)}")
 
         # Restart Timmy if core files changed
-        core_files = {"main.py", "agent_core.py", "tools.py", "memory_manager.py"}
+        core_files = {"app.py", "agent_core.py", "tools.py", "memory_manager.py"}
         if any(Path(a.split(" ")[0]).name in core_files for a in applied):
             self.log("Core file changed, restarting Timmy")
             self.restart_timmy()
@@ -446,7 +445,9 @@ class Doctor:
                 "timestamp": datetime.now().isoformat(),
                 "metadata": {"source": "doctor"},
             })
-            chat_file.write_text(json.dumps(messages, indent=2, ensure_ascii=False))
+            tmp = chat_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(messages, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(chat_file)
         except Exception as e:
             logger.warning(f"Failed to notify Timmy: {e}")
 
@@ -472,14 +473,16 @@ class Doctor:
                 result = self.apply_update(data)
                 results.append(f"{update_file.name}: {result}")
                 # Move file based on result: failed updates go to failed/ for retry
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                safe_name = f"{update_file.stem}_{ts}{update_file.suffix}"
                 if "BLOCKED" in result or "REJECTED" in result or "failed" in result.lower() or "ERROR" in result:
                     failed_dir = UPDATES_DIR / "failed"
                     failed_dir.mkdir(exist_ok=True)
-                    update_file.rename(failed_dir / update_file.name)
+                    update_file.rename(failed_dir / safe_name)
                 else:
                     processed_dir = UPDATES_DIR / "processed"
                     processed_dir.mkdir(exist_ok=True)
-                    update_file.rename(processed_dir / update_file.name)
+                    update_file.rename(processed_dir / safe_name)
             except json.JSONDecodeError:
                 self.log(f"Invalid JSON in {update_file.name}", "ERROR")
                 results.append(f"{update_file.name}: INVALID JSON")
@@ -689,11 +692,6 @@ class Doctor:
 # Singleton
 # ---------------------------------------------------------------------------
 doctor = Doctor()
-DOCTOR_PID_FILE.write_text(str(os.getpid()))
-
-# Start idle evolution and resource monitoring threads
-Thread(target=doctor.idle_evolution_check, daemon=True).start()
-Thread(target=doctor.resource_monitor, daemon=True).start()
 
 # ---------------------------------------------------------------------------
 # Doctor Gradio UI
@@ -817,6 +815,9 @@ with gr.Blocks(title="LLTimmy Doctor") as doctor_app:
 # Entrypoint
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    DOCTOR_PID_FILE.write_text(str(os.getpid()))
+    Thread(target=doctor.idle_evolution_check, daemon=True).start()
+    Thread(target=doctor.resource_monitor, daemon=True).start()
     monitor = Thread(target=doctor.monitor_loop, daemon=True)
     monitor.start()
     doctor.log("Doctor starting on port 7861")

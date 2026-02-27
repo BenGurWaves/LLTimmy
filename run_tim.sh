@@ -5,4 +5,4 @@ cd "$(dirname "$0")"
 
 echo "Starting LLTimmy..."
 source .venv/bin/activate
-python3 main.py
+python3 src/app.py
