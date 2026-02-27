@@ -1,0 +1,68 @@
+{
+  "primary_model": "ollama/qwen3:30b",
+  "fallback_models": ["ollama/gemma3:27b-cloud"],
+  "vision_models": ["gemma3", "llava", "bakllava", "moondream", "llama3.2-vision", "minicpm-v"],
+  "google_api_key": "",
+  "ollama_host": "http://localhost:11434",
+  "ollama_port": 11434,
+  "timmy_name": "Timmy",
+  "doctor_name": "Doctor",
+  "user_name": "Ben",
+  "allowed_paths": [
+    "~/Downloads/LLTimmy_Projects/",
+    "~/Desktop",
+    "~/Documents",
+    "~/Downloads",
+    "~/LLTimmy"
+  ],
+  "banned_paths": [
+    "/System",
+    "/Library",
+    "~/Library",
+    "/usr"
+  ],
+  "gradio_timmy_port": 7860,
+  "gradio_doctor_port": 7861,
+  "max_chat_history": 100,
+  "daily_summary_count": 15,
+  "subconscious_top_results": 7,
+  "archive_after_days": 30,
+  "model_switch_timeout": 30,
+  "safety_level": "moderate",
+  "auto_summary_time": "00:00",
+  "max_react_steps": 15,
+  "max_tool_retries": 3,
+  "goal_persistence": true,
+  "self_evolution": {
+    "enabled": true,
+    "daily_review": true,
+    "auto_apply_improvements": false,
+    "capability_tracking": true,
+    "idle_research": true,
+    "idle_interval_minutes": 30,
+    "max_idle_searches": 3
+  },
+  "doctor_llm_enabled": true,
+  "doctor_model": "ollama/qwen3:30b",
+  "complexity_threshold": 10,
+  "calendar": {
+    "enabled": true,
+    "check_interval_seconds": 60,
+    "reminder_minutes_before": 5
+  },
+  "notifications": {
+    "enabled": true,
+    "sound": true,
+    "on_task_complete": true,
+    "on_error": true,
+    "on_message": true
+  },
+  "messaging": {
+    "interrupt_enabled": true,
+    "queue_enabled": true
+  },
+  "response_speed": {
+    "stream_buffer_tokens": 1,
+    "min_stream_interval_ms": 50
+  }
+}
