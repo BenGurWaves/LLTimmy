@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Virtual environment
+.venv/
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Logs & runtime data
+*.log
+doctor_actions.log
+tim_audit.log
+timmy_stderr.log
+
+# Memory data (personal/local)
+memory/raw_chats/
+memory/summaries/
+memory/archives/
+memory/chromadb/
+memory/calendar.json
+memory/graph_memory.json
+ben_profile.json
+
+# PID files
+/tmp/*.pid
+
+# Build artifacts
+*.spec
+
+# Large files
+get-pip.py
+
+# IDE / editor
+.vscode/
+.idea/
+
+# Claude sessions
+.claude/
+
+# Old files (superseded)
+$HOME/
+
+# Projects output
+projects/
