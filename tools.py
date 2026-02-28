@@ -84,6 +84,11 @@ class RiskEngine:
             if re.search(pattern, command):
                 return "medium", f"Caution: {desc}"
 
+        # Pipe-to-shell check BEFORE safe prefix (BUG-16: prevents cat|sh bypass)
+        if "|" in command:
+            if re.search(r'\|\s*(sh|bash|zsh|python|perl|ruby|node)\b', command):
+                return "high", "Piped to shell/interpreter — dangerous."
+
         # Safe prefix check
         if first_word in self.SAFE_PREFIXES:
             if first_word == "cp" and re.search(r"\s+/System|\s+/Library", cmd_stripped):
@@ -756,10 +761,16 @@ class ToolsSystem:
             if resolve is None:
                 return "", "DaVinci Resolve is not running."
             # Safety: reject scripts with sandbox-escape tokens
-            BANNED = ("__", "import", "exec", "eval", "open", "subprocess", " os.",
-                      "getattr", "setattr", "delattr", "globals", "locals", "compile",
-                      "vars", "type", "bases", "subclasses", "mro", "builtins")
-            if any(tok in script for tok in BANNED):
+            # Substring checks for dunder and class introspection
+            BANNED_SUBSTR = ("__", "subprocess", " os.", "builtins", "subclasses", "mro")
+            # Word-boundary checks to reduce false positives (e.g. "imported")
+            BANNED_WORDS = (r'\bimport\b', r'\bexec\b', r'\beval\b', r'\bopen\b',
+                            r'\bgetattr\b', r'\bsetattr\b', r'\bdelattr\b',
+                            r'\bglobals\b', r'\blocals\b', r'\bcompile\b',
+                            r'\bvars\b', r'\btype\b', r'\bbases\b')
+            if any(tok in script for tok in BANNED_SUBSTR):
+                return "", "Script contains unsafe tokens — rejected."
+            if any(re.search(pat, script) for pat in BANNED_WORDS):
                 return "", "Script contains unsafe tokens — rejected."
             # Restricted evaluation — builtins disabled, only `resolve` in scope
             result = eval(script, {"__builtins__": {}, "resolve": resolve})  # noqa: S307  # nosec

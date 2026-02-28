@@ -433,23 +433,32 @@ class Doctor:
         return f"Applied: {', '.join(applied)}"
 
     def _notify_timmy(self, message: str):
-        """Send a status message to Timmy's chat file (if online)."""
+        """Send a status message to Timmy's chat file (if online).
+        Uses fcntl file locking to coordinate with Timmy process."""
+        import fcntl
         try:
             from datetime import date as _date
             chat_file = BASE_DIR / "memory" / "raw_chats" / f"{_date.today().isoformat()}.json"
-            if chat_file.exists():
-                messages = json.loads(chat_file.read_text(encoding="utf-8"))
-            else:
-                messages = []
-            messages.append({
-                "role": "assistant",
-                "content": f"[Doctor] {message}",
-                "timestamp": datetime.now().isoformat(),
-                "metadata": {"source": "doctor"},
-            })
-            tmp = chat_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(messages, indent=2, ensure_ascii=False), encoding="utf-8")
-            tmp.replace(chat_file)
+            chat_file.parent.mkdir(parents=True, exist_ok=True)
+            lock_file = chat_file.with_suffix(".lock")
+            with open(lock_file, "w") as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                try:
+                    if chat_file.exists():
+                        messages = json.loads(chat_file.read_text(encoding="utf-8"))
+                    else:
+                        messages = []
+                    messages.append({
+                        "role": "assistant",
+                        "content": f"[Doctor] {message}",
+                        "timestamp": datetime.now().isoformat(),
+                        "metadata": {"source": "doctor"},
+                    })
+                    tmp = chat_file.with_suffix(".tmp")
+                    tmp.write_text(json.dumps(messages, indent=2, ensure_ascii=False), encoding="utf-8")
+                    tmp.replace(chat_file)
+                finally:
+                    fcntl.flock(lf, fcntl.LOCK_UN)
         except Exception as e:
             logger.warning(f"Failed to notify Timmy: {e}")
 
@@ -591,6 +600,7 @@ class Doctor:
         _last_restart_time = 0  # Critic #26: cooldown to prevent rapid restarts
         while self.monitoring:
             try:
+                _just_restarted = False
                 if not self.is_timmy_running():
                     now = time.time()
                     if now - _last_restart_time > 15:  # Wait 15s between restarts
@@ -598,10 +608,12 @@ class Doctor:
                         time.sleep(1)
                         self.restart_timmy()
                         _last_restart_time = now
+                        _just_restarted = True
                         time.sleep(8)  # Give Timmy time to write PID file
 
-                # Check for pending updates
-                self.check_and_apply_updates()
+                # Skip updates right after restart to prevent double-restart
+                if not _just_restarted:
+                    self.check_and_apply_updates()
 
                 # Check for model switch signals
                 if STATUS_FILE.exists():

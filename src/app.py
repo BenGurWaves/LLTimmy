@@ -13,6 +13,7 @@ premium minimalism. Every pixel has purpose and breathing room.
 
 import json
 import os
+import re
 import sys
 import asyncio
 import threading
@@ -83,21 +84,21 @@ VENV_PYTHON = str(_venv_path) if _venv_path.exists() else sys.executable
 # ═══════════════════════════════════════════════════════════════════════════
 # Quiet Luxury Color Palette
 # ═══════════════════════════════════════════════════════════════════════════
-C_BG         = "#0d0d0d"    # Deep matte charcoal — the canvas
-C_SURFACE    = "#141414"    # Panel / sidebar surface
-C_SURFACE_2  = "#1c1c1c"    # Elevated surface (cards, hovers)
-C_SURFACE_3  = "#242424"    # Hover / active states
-C_BORDER     = "#1e1e1e"    # Barely-visible border
-C_BORDER_VIS = "#2a2a2a"    # Slightly more visible border for inputs
-C_ACCENT     = "#e8c46b"    # Soft pastel amber/gold — quiet luxury
-C_ACCENT_DIM = "#221e10"    # Dim amber for subtle bg hints
-C_ACCENT_HOV = "#d4b05a"    # Accent hover — muted
+C_BG         = "#121212"    # Deep matte charcoal — the canvas
+C_SURFACE    = "#161616"    # Panel / sidebar surface
+C_SURFACE_2  = "#1e1e1e"    # Elevated surface (cards, hovers)
+C_SURFACE_3  = "#272727"    # Hover / active states
+C_BORDER     = "#1a1a1a"    # Barely-visible border
+C_BORDER_VIS = "#2c2c2c"    # Slightly more visible border for inputs
+C_ACCENT     = "#f5d06b"    # Soft pastel amber/gold — quiet luxury
+C_ACCENT_DIM = "#1e1a0f"    # Dim amber for subtle bg hints
+C_ACCENT_HOV = "#e0bc58"    # Accent hover — muted
 C_TEXT       = "#ededef"    # Primary text — warm off-white
 C_TEXT_SEC   = "#7c7c82"    # Secondary text
 C_TEXT_MUTED = "#404044"    # Muted / disabled
 C_GREEN      = "#5cbf6e"    # Online / success — softer green
 C_RED        = "#e05c54"    # Error / failure — softer red
-C_INPUT_BG   = "#171717"    # Input field background
+C_INPUT_BG   = "#191919"    # Input field background
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -132,6 +133,7 @@ class LLTimmyApp(ctk.CTk):
 
         # ── State ──────────────────────────────────────────────────────
         self._agent_working = False
+        self._finalize_token = 0           # unique token per agent run
         self._chat_history: List[Dict] = []
         self._current_tab = "Tasks"
         self._show_reasoning = True
@@ -184,6 +186,8 @@ class LLTimmyApp(ctk.CTk):
     def _build_ui(self):
         self._main_frame = ctk.CTkFrame(self, fg_color=C_BG, corner_radius=0)
         self._main_frame.pack(fill="both", expand=True)
+        # Column 0 = sidebar (fixed), column 1 = chat (flex), column 2 = debug (toggleable)
+        self._main_frame.grid_columnconfigure(0, weight=0, minsize=260)
         self._main_frame.grid_columnconfigure(1, weight=1)
         self._main_frame.grid_columnconfigure(2, weight=0, minsize=0)
         self._main_frame.grid_rowconfigure(0, weight=1)
@@ -197,11 +201,12 @@ class LLTimmyApp(ctk.CTk):
     # ══════════════════════════════════════════════════════════════════
     def _build_sidebar(self):
         sb = ctk.CTkFrame(
-            self._main_frame, width=250, fg_color=C_SURFACE,
+            self._main_frame, width=260, fg_color=C_SURFACE,
             corner_radius=0, border_width=1, border_color=C_BORDER,
         )
         sb.grid(row=0, column=0, sticky="nsew")
         sb.grid_propagate(False)
+        sb.grid_columnconfigure(0, weight=1)
         sb.grid_rowconfigure(4, weight=1)
         self._sidebar = sb
 
@@ -307,8 +312,8 @@ class LLTimmyApp(ctk.CTk):
         self._quick_add = ctk.CTkEntry(
             btm, placeholder_text="Quick add task\u2026",
             fg_color=C_INPUT_BG, border_color=C_BORDER_VIS,
-            text_color=C_TEXT, font=("SF Pro", 11), height=30,
-            corner_radius=14,
+            text_color=C_TEXT, font=("SF Pro", 11), height=32,
+            corner_radius=16,
         )
         self._quick_add.pack(fill="x", pady=(0, 6))
         self._quick_add.bind("<Return>", self._quick_add_task)
@@ -326,7 +331,7 @@ class LLTimmyApp(ctk.CTk):
         card = ctk.CTkFrame(
             parent,
             fg_color=C_ACCENT_DIM if active else C_SURFACE_2,
-            corner_radius=14, height=42, **kw,
+            corner_radius=16, height=44, **kw,
         )
         card.pack_propagate(False)
 
@@ -491,12 +496,12 @@ class LLTimmyApp(ctk.CTk):
             if name == tab_name:
                 btn.configure(
                     fg_color=C_ACCENT, text_color=C_BG,
-                    font=("SF Pro", 12, "bold"),
+                    font=("SF Pro", 11, "bold"),
                 )
             else:
                 btn.configure(
                     fg_color="transparent", text_color=C_TEXT_SEC,
-                    font=("SF Pro", 12),
+                    font=("SF Pro", 11),
                 )
         self._show_tab(tab_name)
 
@@ -966,10 +971,10 @@ class LLTimmyApp(ctk.CTk):
         # ── Input bar ─────────────────────────────────────────────────
         inp = ctk.CTkFrame(
             chat, fg_color=C_SURFACE,
-            corner_radius=22, border_width=1, border_color=C_BORDER,
-            height=50,
+            corner_radius=24, border_width=1, border_color=C_BORDER,
+            height=52,
         )
-        inp.grid(row=3, column=0, sticky="ew", padx=28, pady=(8, 6))
+        inp.grid(row=3, column=0, sticky="ew", padx=28, pady=(8, 8))
         inp.grid_columnconfigure(1, weight=1)
 
         # Left tool icons
@@ -1190,6 +1195,43 @@ class LLTimmyApp(ctk.CTk):
         self._debug_text.see("end")
 
     # ══════════════════════════════════════════════════════════════════
+    #  CHAT SANITIZER — clean raw markdown/HTML for human-like display
+    # ══════════════════════════════════════════════════════════════════
+    @staticmethod
+    def _sanitize_chat(text: str) -> str:
+        """Strip markdown, HTML, and ReAct artifacts for clean display."""
+        # Remove entire <details>...</details> blocks (loop for nested)
+        prev = None
+        while prev != text:
+            prev = text
+            text = re.sub(r'<details[^>]*>.*?</details>', '', text, flags=re.DOTALL)
+        # Remove any orphaned tags (from partial streaming)
+        text = re.sub(r'<details[^>]*>', '', text)
+        text = re.sub(r'</details>', '', text)
+        text = re.sub(r'<summary[^>]*>.*?</summary>', '', text, flags=re.DOTALL)
+        # Remove code fences (``` with optional language)
+        text = re.sub(r'```\w*\n?', '', text)
+        # Remove bold markers **text** → text
+        text = re.sub(r'\*\*([^*]*)\*\*', r'\1', text)
+        # Remove italic markers *text* → text (single asterisk)
+        text = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'\1', text)
+        # Remove horizontal rules (--- or ===)
+        text = re.sub(r'^-{3,}\s*$', '', text, flags=re.MULTILINE)
+        text = re.sub(r'^={3,}\s*$', '', text, flags=re.MULTILINE)
+        # Remove markdown headings (### etc) — keep the text
+        text = re.sub(r'^#{1,4}\s+', '', text, flags=re.MULTILINE)
+        # Remove backtick inline code markers
+        text = re.sub(r'`([^`]*)`', r'\1', text)
+        # Remove leading bullet decorators that are purely ornamental
+        # (but keep real list items with content)
+        text = re.sub(r'^\s*[\*\-]\s*$', '', text, flags=re.MULTILINE)
+        # Clean up (completed, no output) noise
+        text = re.sub(r'\(completed,\s*no output\)', '', text)
+        # Clean up excessive blank lines
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
+
+    # ══════════════════════════════════════════════════════════════════
     #  CHAT RENDERING
     # ══════════════════════════════════════════════════════════════════
     def _render_chat(self):
@@ -1203,6 +1245,10 @@ class LLTimmyApp(ctk.CTk):
             # Optionally filter reasoning
             if role == "assistant" and not self._show_reasoning:
                 content = self._filter_reasoning(content)
+
+            # Always sanitize assistant output (strip HTML, markdown, code fences)
+            if role == "assistant":
+                content = self._sanitize_chat(content)
 
             if role == "user":
                 self._chat_display.insert("end", "Ben  ", "user_name")
@@ -1226,19 +1272,28 @@ class LLTimmyApp(ctk.CTk):
         self._chat_display.see("end")
 
     def _filter_reasoning(self, text: str) -> str:
-        """Strip ReAct Thought/Action/Observation blocks, keep final answer."""
+        """Strip ReAct Thought/Action/Observation blocks and HTML wrappers."""
+        # First strip <details>...</details> blocks entirely (loop for nested)
+        prev = None
+        while prev != text:
+            prev = text
+            text = re.sub(r'<details[^>]*>.*?</details>', '', text, flags=re.DOTALL)
         lines = text.split("\n")
         out = []
         skip = False
         for line in lines:
             stripped = line.strip()
+            # Enter skip mode for any ReAct keyword (including Action Input)
             if stripped.startswith(("Thought:", "Action:", "Action Input:", "Observation:")):
                 skip = True
                 continue
-            if skip and stripped.startswith(("**[", "Final Answer")):
-                skip = False
-            if not skip:
-                out.append(line)
+            # Exit skip only for Final Answer or [Agent ...] markers
+            if skip:
+                if stripped.startswith(("Final Answer", "**[", "[Agent")):
+                    skip = False
+                else:
+                    continue
+            out.append(line)
         result = "\n".join(out).strip()
         return result if result else text
 
@@ -1288,9 +1343,11 @@ class LLTimmyApp(ctk.CTk):
             self._attach_btn.configure(text_color=C_TEXT_MUTED)
         self._append_message("user", text)
         self._set_working(True)
-        threading.Thread(target=self._run_agent, args=(text, file_paths), daemon=True).start()
+        self._finalize_token += 1
+        token = self._finalize_token
+        threading.Thread(target=self._run_agent, args=(text, file_paths, token), daemon=True).start()
 
-    def _run_agent(self, user_message: str, file_paths=None):
+    def _run_agent(self, user_message: str, file_paths=None, token: int = 0):
         """Run agent ReAct loop with streaming. BUG-FIX: agent.run() yields
         the full accumulated response so far, not deltas — use = not +=."""
         full_response = ""
@@ -1327,7 +1384,7 @@ class LLTimmyApp(ctk.CTk):
             self._push_debug("result", f"ERROR: {e}")
 
         self._push_debug("result", "Response complete")
-        self.after(0, self._finalize_response, full_response)
+        self.after(0, self._finalize_response, full_response, token)
 
     def _update_streaming(self, partial):
         """Incremental streaming update — ONLY updates the text widget.
@@ -1337,11 +1394,14 @@ class LLTimmyApp(ctk.CTk):
         display_text = partial
         if not self._show_reasoning:
             display_text = self._filter_reasoning(partial)
+        # Always sanitize (strip HTML/markdown artifacts)
+        display_text = self._sanitize_chat(display_text)
 
         self._chat_display.configure(state="normal")
         try:
-            last_bot = self._chat_display._textbox.search(
-                "Timmy", "end", backwards=True, stopindex="1.0")
+            # Search by tag instead of text content (avoids matching "Timmy" in messages)
+            bot_ranges = self._chat_display._textbox.tag_ranges("bot_name")
+            last_bot = str(bot_ranges[-2]) if len(bot_ranges) >= 2 else None
             if last_bot:
                 next_line = self._chat_display._textbox.index(
                     f"{last_bot} + 1 lines linestart")
@@ -1356,9 +1416,9 @@ class LLTimmyApp(ctk.CTk):
         self._chat_display.configure(state="disabled")
         self._chat_display.see("end")
 
-    def _finalize_response(self, full_text):
-        # Guard against duplicate calls from concurrent _run_agent / _run_jury
-        if not self._agent_working:
+    def _finalize_response(self, full_text, token: int = 0):
+        # Guard: only the matching token can finalize (prevents jury/agent overlap)
+        if not self._agent_working or (token and token != self._finalize_token):
             return
         if self._chat_history and self._chat_history[-1]["role"] == "assistant":
             self._chat_history[-1]["content"] = full_text
@@ -1374,9 +1434,12 @@ class LLTimmyApp(ctk.CTk):
         if working:
             self._status_dot.configure(text_color=C_ACCENT)
             self._status_label.configure(text="Working\u2026")
+            # Update model badge to show current model
+            self._model_label.configure(text=agent.current_model)
         else:
             self._status_dot.configure(text_color=C_GREEN)
             self._status_label.configure(text="Online")
+            self._model_label.configure(text=agent.current_model)
 
     def _send_suggestion(self, text):
         self._msg_input.delete(0, "end")
@@ -1393,9 +1456,11 @@ class LLTimmyApp(ctk.CTk):
         self._msg_input.delete(0, "end")
         self._append_message("user", f"[JURY MODE] {text}")
         self._set_working(True)
-        threading.Thread(target=self._run_jury, args=(text,), daemon=True).start()
+        self._finalize_token += 1
+        token = self._finalize_token
+        threading.Thread(target=self._run_jury, args=(text, token), daemon=True).start()
 
-    def _run_jury(self, query):
+    def _run_jury(self, query, token: int = 0):
         full = ""
         try:
             async def _do():
@@ -1408,7 +1473,7 @@ class LLTimmyApp(ctk.CTk):
             future.result(timeout=300)
         except Exception as e:
             full = f"Jury error: {e}"
-        self.after(0, self._finalize_response, full)
+        self.after(0, self._finalize_response, full, token)
 
     # ══════════════════════════════════════════════════════════════════
     #  ATTACH FILE (real file picker dialog)
@@ -1420,14 +1485,18 @@ class LLTimmyApp(ctk.CTk):
                 ("All Files", "*.*"),
                 ("Images", "*.png *.jpg *.jpeg *.gif *.webp"),
                 ("Text", "*.txt *.md *.py *.json *.csv"),
+                ("Documents", "*.pdf *.docx *.xlsx"),
             ],
         )
         if path:
             self._attached_file = path
             fname = Path(path).name
             self._attach_btn.configure(text_color=C_ACCENT)
-            self._msg_input.delete(0, "end")
-            self._msg_input.insert(0, f"[Attached: {fname}] ")
+            # APPEND to existing text — never replace what user typed
+            current = self._msg_input.get()
+            if current and not current.endswith(" "):
+                self._msg_input.insert("end", " ")
+            self._msg_input.insert("end", f"[Attached: {fname}]")
             logger.info("File attached: %s", path)
 
     # ══════════════════════════════════════════════════════════════════
@@ -1466,8 +1535,11 @@ class LLTimmyApp(ctk.CTk):
             self.after(0, lambda: self._mic_btn.configure(text_color=C_TEXT_MUTED))
 
     def _insert_voice_text(self, text):
-        self._msg_input.delete(0, "end")
-        self._msg_input.insert(0, text)
+        """Append voice transcription to existing input text."""
+        current = self._msg_input.get()
+        if current and not current.endswith(" "):
+            self._msg_input.insert("end", " ")
+        self._msg_input.insert("end", text)
 
     # ══════════════════════════════════════════════════════════════════
     #  TRACE PANEL (reasoning trace toggle — opens sidebar Trace tab)

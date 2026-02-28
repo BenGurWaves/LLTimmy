@@ -33,7 +33,8 @@ logging.getLogger("chromadb.telemetry").setLevel(logging.ERROR)
 
 logger = logging.getLogger(__name__)
 
-MEMORY_BASE = Path.home() / "LLTimmy" / "memory"
+# Use __file__ relative path so it works regardless of project location
+MEMORY_BASE = Path(__file__).resolve().parent / "memory"
 
 
 # ---------------------------------------------------------------------------

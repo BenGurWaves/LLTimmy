@@ -336,9 +336,7 @@ class SelfEvolution:
 
         while self._idle_running:
             try:
-                time.sleep(interval)
-
-                # Only research when idle
+                # Only research when idle (sleep at end, not beginning)
                 if agent_core and agent_core.is_working:
                     continue
 
@@ -368,6 +366,8 @@ class SelfEvolution:
 
             except Exception as e:
                 logger.warning(f"Idle research error: {e}")
+            finally:
+                time.sleep(interval)
 
     def _idle_web_search(self, query: str, max_results: int = 3) -> List[Dict]:
         """Lightweight web search for idle research."""

@@ -787,7 +787,12 @@ class AgentCore:
                     final_text += token_chunk
                     accumulated += token_chunk
                     yield accumulated
-                # Continue to post-processing with retry result
+                # Strip any tool calls from retry response (retry does not execute tools)
+                accumulated = re.sub(r'Thought:.*?(?=\n\n|\Z)', '', accumulated, flags=re.DOTALL).strip()
+                accumulated = re.sub(r'Action:.*?(?=\n\n|\Z)', '', accumulated, flags=re.DOTALL).strip()
+                accumulated = re.sub(r'Action Input:.*?(?=\n\n|\Z)', '', accumulated, flags=re.DOTALL).strip()
+                final_text = accumulated
+                yield accumulated
 
             # Post-process: filter refusal phrases from final output
             accumulated = _filter_refusals(accumulated)
