@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 # Global Ollama request gate — serializes all Ollama API calls to prevent 429
 # ---------------------------------------------------------------------------
 _ollama_gate = threading.Lock()
-_OLLAMA_MAX_RETRIES = 3
-_OLLAMA_RETRY_BACKOFF = [2, 5, 10]  # seconds between retries
+_OLLAMA_MAX_RETRIES = 5
+_OLLAMA_RETRY_BACKOFF = [3, 8, 15, 25, 40]  # seconds between retries (aggressive backoff)
 
 # Vision-capable model families
 VISION_MODELS = {"gemma3", "llava", "bakllava", "moondream", "llama3.2-vision", "minicpm-v"}
@@ -237,24 +237,9 @@ class AgentCore:
         self.current_model = self._clean(model_name)
 
     def _select_model_tier(self, message: str) -> str:
-        """Model tiering: use small model for routine, full model for complex.
-        Returns model name to use for this request."""
-        routine_patterns = [
-            "hi", "hello", "hey", "thanks", "thank you", "ok", "okay",
-            "what time", "what date", "who are you", "your name",
-        ]
-        msg_lower = message.lower().strip()
-        # Short greetings / simple Q&A -> use small model if available
-        if len(msg_lower) < 30 and any(p in msg_lower for p in routine_patterns):
-            # Use cached model list (refreshed max once per 60s)
-            now = time.time()
-            if not hasattr(self, "_cached_models") or now - self._cached_models_ts > 60:
-                self._cached_models = self.get_available_models()
-                self._cached_models_ts = now
-            small_models = [m for m in self._cached_models
-                            if any(s in m for s in ("1b", "3b", "7b", "8b", "0.5b", "1.5b"))]
-            if small_models:
-                return small_models[0]
+        """Model tiering: DISABLED — switching models with large VRAM models (30B+)
+        causes Ollama to unload/reload, triggering 429 errors. Always use current model.
+        Re-enable when running with enough VRAM for concurrent model loads."""
         return self.current_model
 
     def get_available_models(self) -> List[str]:
@@ -605,10 +590,10 @@ class AgentCore:
 
     # ---- Ollama streaming (gated to prevent 429, stops at Observation) ----
     def _stream_ollama(self, messages: List[Dict]):
-        # Acquire global gate — only one Ollama call at a time
-        _ollama_gate.acquire()
-        try:
-            for attempt in range(_OLLAMA_MAX_RETRIES):
+        # Gate only covers request setup — released before streaming begins
+        resp = None
+        for attempt in range(_OLLAMA_MAX_RETRIES):
+            with _ollama_gate:
                 try:
                     resp = requests.post(
                         f"{self.ollama_host}/api/chat",
@@ -621,31 +606,33 @@ class AgentCore:
                         stream=True, timeout=300,
                     )
                     if resp.status_code == 429:
-                        backoff = _OLLAMA_RETRY_BACKOFF[min(attempt, len(_OLLAMA_RETRY_BACKOFF) - 1)]
-                        logger.warning("Ollama 429 on stream (attempt %d/%d) — retrying in %ds",
-                                       attempt + 1, _OLLAMA_MAX_RETRIES, backoff)
-                        _ollama_gate.release()
-                        time.sleep(backoff)
-                        _ollama_gate.acquire()
-                        continue
-                    resp.raise_for_status()
-                    break  # Success — proceed to streaming
+                        resp = None  # Mark for retry
+                    else:
+                        resp.raise_for_status()
+                        break  # Success — gate released, proceed to streaming
                 except requests.exceptions.HTTPError as e:
                     if "429" in str(e) and attempt < _OLLAMA_MAX_RETRIES - 1:
-                        backoff = _OLLAMA_RETRY_BACKOFF[min(attempt, len(_OLLAMA_RETRY_BACKOFF) - 1)]
-                        logger.warning("Ollama 429 on stream (attempt %d/%d) — retrying in %ds",
-                                       attempt + 1, _OLLAMA_MAX_RETRIES, backoff)
-                        _ollama_gate.release()
-                        time.sleep(backoff)
-                        _ollama_gate.acquire()
-                        continue
-                    _ollama_gate.release()
-                    yield f"\n\n**Ollama error:** {e}\n"
+                        resp = None  # Mark for retry
+                    else:
+                        yield f"\n\n**Ollama error:** {e}\n"
+                        return
+                except requests.ConnectionError:
+                    yield f"\n\n**Cannot connect to Ollama at {self.ollama_host}.**\nRun `ollama serve` to start.\n"
                     return
-            else:
-                _ollama_gate.release()
-                yield "\n\n**Ollama error:** Too many requests (429). Try again in a moment.\n"
-                return
+            # Gate released here — sleep outside the lock for retries
+            if resp is None:
+                if attempt < _OLLAMA_MAX_RETRIES - 1:
+                    backoff = _OLLAMA_RETRY_BACKOFF[min(attempt, len(_OLLAMA_RETRY_BACKOFF) - 1)]
+                    logger.warning("Ollama 429 on stream (attempt %d/%d) — retrying in %ds",
+                                   attempt + 1, _OLLAMA_MAX_RETRIES, backoff)
+                    time.sleep(backoff)
+        else:
+            # All retries exhausted
+            yield "\n\n**Ollama is busy** — the model is still loading or processing another request. Please try again in a few seconds.\n"
+            return
+
+        # Stream response WITHOUT holding the gate
+        try:
             buffer = ""
             buffer_count = 0
             buffer_limit = self.config.get("response_speed", {}).get("stream_buffer_tokens", 1)
@@ -682,11 +669,6 @@ class AgentCore:
             yield f"\n\n**Cannot connect to Ollama at {self.ollama_host}.**\nRun `ollama serve` to start.\n"
         except Exception as e:
             yield f"\n\n**Ollama error:** {e}\n"
-        finally:
-            try:
-                _ollama_gate.release()
-            except RuntimeError:
-                pass  # Already released in error path
 
     # ---- Main run loop ----
     async def run(self, user_message: str, file_paths: List[str] = None) -> AsyncGenerator[str, None]:

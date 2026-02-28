@@ -182,6 +182,7 @@ class LLTimmyApp(ctk.CTk):
         self._debug_visible = False
         self._debug_entries: List[Dict] = []  # live debug feed
         self._debug_lock = threading.Lock()
+        self._warmup_done = False              # set True by warmup thread
 
         # Load today's conversation
         self._load_chat_history()
@@ -1393,6 +1394,15 @@ class LLTimmyApp(ctk.CTk):
         the full accumulated response so far, not deltas — use = not +=."""
         full_response = ""
         self._push_debug("thought", f"Processing: {user_message[:80]}")
+
+        # Wait for warmup to finish if it's still running (max 30s)
+        if not self._warmup_done:
+            self._push_debug("thought", "Waiting for model to load...")
+            for _ in range(60):
+                if self._warmup_done:
+                    break
+                time.sleep(0.5)
+
         try:
             async def _do():
                 nonlocal full_response
@@ -1684,19 +1694,26 @@ class LLTimmyApp(ctk.CTk):
                 time.sleep(30)
         threading.Thread(target=_ui_loop, daemon=True).start()
 
-        # Ollama warm-up (delayed to avoid 429 on startup)
+        # Ollama warm-up (delayed, minimal, skippable)
+        self._warmup_done = False
         def _warmup():
-            time.sleep(5)  # Let main agent initialize first
+            time.sleep(8)  # Wait for UI to initialize and user to potentially type
+            if self._agent_working:
+                logger.info("User already active — skipping warmup")
+                self._warmup_done = True
+                return
             try:
                 agent._ollama_request_sync(
                     {"model": agent.current_model,
                      "messages": [{"role": "user", "content": "hi"}],
-                     "stream": False},
+                     "stream": False,
+                     "options": {"num_predict": 1}},  # Minimal: just load model
                     timeout=60,
                 )
                 logger.info("Ollama warm-up complete")
             except Exception as e:
                 logger.warning("Warmup failed: %s", e)
+            self._warmup_done = True
         threading.Thread(target=_warmup, daemon=True).start()
 
     def _start_doctor(self):
@@ -1729,8 +1746,16 @@ class LLTimmyApp(ctk.CTk):
     def _on_close(self):
         try:
             PID_FILE.unlink(missing_ok=True)
+            LOCK_FILE.unlink(missing_ok=True)
         except Exception:
             pass
+        # Explicitly close lock fd to release fcntl lock synchronously
+        fd = getattr(_acquire_single_instance_lock, '_fd', None)
+        if fd:
+            try:
+                fd.close()
+            except Exception:
+                pass
         evolution.stop_idle_research()
         self.destroy()
 

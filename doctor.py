@@ -148,6 +148,9 @@ def call_llm_for_review(prompt: str, config: dict) -> dict:
                     time.sleep(3 * (_attempt + 1))
                     continue
                 break
+            else:
+                # All 3 attempts returned 429
+                return {"approved": False, "modified_changes": [], "reasons": "Ollama 429: all review retries exhausted."}
             resp.raise_for_status()
             response_text = resp.json().get("response", "")
 
@@ -846,6 +849,11 @@ def handle_command(message: str, history: list) -> tuple[list, str, str]:
                         time.sleep(3 * (_att + 1))
                         continue
                     break
+                else:
+                    reply = "Ollama is busy (429). Please try again in a moment."
+                    history.append({"role": "assistant", "content": reply})
+                    return history, "", doctor.get_status_text()
+                resp.raise_for_status()
                 reply = resp.json().get("response", "No response from LLM.")
             except Exception as e:
                 reply = f"LLM unavailable: {e}\nType `help` for commands."
