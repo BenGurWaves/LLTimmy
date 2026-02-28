@@ -108,9 +108,9 @@ cat > "$APP_DEST/Contents/Info.plist" << 'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleVersion</key>
-    <string>8.0</string>
+    <string>14.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>8.0</string>
+    <string>14.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
     <key>NSHighResolutionCapable</key>

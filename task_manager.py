@@ -5,6 +5,7 @@ Survives restarts. Goals shown in agent system prompt.
 """
 import json
 import logging
+import threading
 from datetime import datetime
 from typing import Dict, List, Optional
 from pathlib import Path
@@ -107,11 +108,14 @@ class TaskManager:
         self.tasks_file = MEMORY_BASE / "tasks.json"
         self.goals_file = MEMORY_BASE / "active_goals.json"
         MEMORY_BASE.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()  # Thread-safe: guards tasks dict + disk I/O
         self.tasks: Dict[str, Task] = {}
-        self._load()
+        with self._lock:
+            self._load()
 
     # ---- Persistence ----
     def _load(self):
+        """Load tasks from disk. Caller MUST hold self._lock."""
         if self.tasks_file.exists():
             try:
                 data = json.loads(self.tasks_file.read_text(encoding="utf-8"))
@@ -122,14 +126,29 @@ class TaskManager:
                 logger.warning(f"Task load error: {e}")
 
     def _save(self):
+        """Save tasks to disk. Caller MUST hold self._lock."""
         data = [t.to_dict() for t in self.tasks.values()]
         self._atomic_write(self.tasks_file, data)
         self._sync_goals()
 
+    def reload_from_disk(self):
+        """Thread-safe full reload: clear in-memory tasks and re-read from disk."""
+        with self._lock:
+            self.tasks.clear()
+            self._load()
+
     def _sync_goals(self):
-        """Write active goals to active_goals.json for the agent system prompt."""
-        active = self.get_active_goals()
+        """Write active goals to active_goals.json. Caller MUST hold self._lock."""
+        active = self._get_active_goals_unlocked()
         self._atomic_write(self.goals_file, active)
+
+    def _get_active_goals_unlocked(self) -> List[str]:
+        """Return active goals without acquiring lock. Caller MUST hold self._lock."""
+        return [
+            t.title
+            for t in self.tasks.values()
+            if t.parent_id is None and t.status not in ("completed", "failed")
+        ]
 
     @staticmethod
     def _atomic_write(path: Path, data):
@@ -151,62 +170,76 @@ class TaskManager:
     ) -> Task:
         task = Task(title, description, priority, parent_id,
                      urgency=urgency, schedule=schedule, scheduled_time=scheduled_time)
-        self.tasks[task.id] = task
+        with self._lock:
+            self.tasks[task.id] = task
 
-        # If this is a subtask, register with parent
-        if parent_id and parent_id in self.tasks:
-            self.tasks[parent_id].subtasks.append(task.id)
-            self.tasks[parent_id].updated_at = datetime.now().isoformat()
+            # If this is a subtask, register with parent
+            if parent_id and parent_id in self.tasks:
+                self.tasks[parent_id].subtasks.append(task.id)
+                self.tasks[parent_id].updated_at = datetime.now().isoformat()
 
-        self._save()
+            self._save()
         logger.info(f"Task added: {task.title} [{task.id}] urgency={urgency} schedule={schedule}")
         return task
 
     def get_task(self, task_id: str) -> Optional[Task]:
-        return self.tasks.get(task_id)
+        with self._lock:
+            return self.tasks.get(task_id)
 
     def update_status(self, task_id: str, status: str) -> Optional[Task]:
-        task = self.tasks.get(task_id)
-        if not task:
-            return None
-        task.status = status
-        task.updated_at = datetime.now().isoformat()
-        if status == "completed":
-            task.completed_at = datetime.now().isoformat()
-        self._save()
+        with self._lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return None
+            task.status = status
+            task.updated_at = datetime.now().isoformat()
+            if status == "completed":
+                task.completed_at = datetime.now().isoformat()
+            self._save()
         logger.info(f"Task [{task_id}] -> {status}")
         return task
 
     def update_title(self, task_id: str, new_title: str) -> Optional[Task]:
         """Rename a task."""
-        task = self.tasks.get(task_id)
-        if not task:
-            return None
-        task.title = new_title
-        task.updated_at = datetime.now().isoformat()
-        self._save()
+        with self._lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return None
+            task.title = new_title
+            task.updated_at = datetime.now().isoformat()
+            self._save()
         logger.info(f"Task [{task_id}] renamed to: {new_title}")
         return task
 
     def add_note(self, task_id: str, note: str) -> Optional[Task]:
         """Add a note to a task."""
-        task = self.tasks.get(task_id)
-        if not task:
-            return None
-        task.notes.append(note)
-        task.updated_at = datetime.now().isoformat()
-        self._save()
+        with self._lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return None
+            task.notes.append(note)
+            task.updated_at = datetime.now().isoformat()
+            self._save()
         return task
 
     def find_by_title(self, title: str) -> Optional[Task]:
         """Find a task by title (case-insensitive)."""
         title_lower = title.lower().strip()
-        for task in self.tasks.values():
-            if task.title.lower() == title_lower:
-                return task
+        with self._lock:
+            for task in self.tasks.values():
+                if task.title.lower() == title_lower:
+                    return task
         return None
 
     def remove_task(self, task_id: str) -> bool:
+        with self._lock:
+            removed = self._remove_task_unlocked(task_id)
+            if removed:
+                self._save()  # Single write after all recursive mutations
+            return removed
+
+    def _remove_task_unlocked(self, task_id: str) -> bool:
+        """Remove task without acquiring lock or saving. Caller MUST hold self._lock and call _save() after."""
         task = self.tasks.pop(task_id, None)
         if not task:
             return False
@@ -214,89 +247,96 @@ class TaskManager:
         if task.parent_id and task.parent_id in self.tasks:
             parent = self.tasks[task.parent_id]
             parent.subtasks = [s for s in parent.subtasks if s != task_id]
-        # Remove subtasks recursively
+        # Remove subtasks recursively (no _save per recursion)
         for sub_id in list(task.subtasks):
-            self.remove_task(sub_id)
-        self._save()
+            self._remove_task_unlocked(sub_id)
         return True
 
     # ---- Checkpoints ----
     def add_checkpoint(self, task_id: str, note: str, data: Dict = None):
-        task = self.tasks.get(task_id)
-        if not task:
-            return
-        task.checkpoints.append({
-            "timestamp": datetime.now().isoformat(),
-            "note": note,
-            "data": data or {},
-        })
-        task.updated_at = datetime.now().isoformat()
-        self._save()
+        with self._lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return
+            task.checkpoints.append({
+                "timestamp": datetime.now().isoformat(),
+                "note": note,
+                "data": data or {},
+            })
+            task.updated_at = datetime.now().isoformat()
+            self._save()
 
     # ---- Queries ----
     def get_active_goals(self) -> List[str]:
         """Return titles of all non-completed top-level tasks (goals)."""
-        return [
-            t.title
-            for t in self.tasks.values()
-            if t.parent_id is None and t.status not in ("completed", "failed")
-        ]
+        with self._lock:
+            return self._get_active_goals_unlocked()
 
     def get_pending_tasks(self) -> List[Task]:
         """Return all pending tasks sorted by priority."""
-        return sorted(
-            [t for t in self.tasks.values() if t.status == "pending"],
-            key=lambda t: t.priority,
-        )
+        with self._lock:
+            return sorted(
+                [t for t in self.tasks.values() if t.status == "pending"],
+                key=lambda t: t.priority,
+            )
 
     def get_in_progress(self) -> List[Task]:
-        return [t for t in self.tasks.values() if t.status == "in_progress"]
+        with self._lock:
+            return [t for t in self.tasks.values() if t.status == "in_progress"]
 
     def get_all_tasks(self) -> List[Task]:
-        return list(self.tasks.values())
+        with self._lock:
+            return list(self.tasks.values())
 
     def get_next_task(self) -> Optional[Task]:
         """Get the highest-priority task that should run now.
         Order: critical urgency > high > normal > low, then by priority number."""
         urgency_order = {"critical": 0, "high": 1, "normal": 2, "low": 3}
-        ready = [
-            t for t in self.tasks.values()
-            if t.status == "pending" and t.schedule == "now"
-        ]
-        if not ready:
-            # Also consider "idle" scheduled tasks
+        with self._lock:
             ready = [
                 t for t in self.tasks.values()
-                if t.status == "pending" and t.schedule == "idle"
+                if t.status == "pending" and t.schedule == "now"
             ]
-        if not ready:
-            # Check scheduled tasks whose time has arrived
-            now = datetime.now().isoformat()
-            ready = [
-                t for t in self.tasks.values()
-                if t.status == "pending" and t.schedule == "scheduled"
-                and t.scheduled_time and t.scheduled_time <= now
-            ]
-        if not ready:
-            return None
-        ready.sort(key=lambda t: (urgency_order.get(t.urgency, 2), t.priority))
-        return ready[0]
+            if not ready:
+                # Also consider "idle" scheduled tasks
+                ready = [
+                    t for t in self.tasks.values()
+                    if t.status == "pending" and t.schedule == "idle"
+                ]
+            if not ready:
+                # Check scheduled tasks whose time has arrived
+                now = datetime.now().isoformat()
+                ready = [
+                    t for t in self.tasks.values()
+                    if t.status == "pending" and t.schedule == "scheduled"
+                    and t.scheduled_time and t.scheduled_time <= now
+                ]
+            if not ready:
+                return None
+            ready.sort(key=lambda t: (urgency_order.get(t.urgency, 2), t.priority))
+            return ready[0]
 
     def update_progress(self, task_id: str, progress: int) -> Optional[Task]:
         """Update task progress (0-100%)."""
-        task = self.tasks.get(task_id)
-        if not task:
-            return None
-        task.progress = max(0, min(100, progress))
-        task.updated_at = datetime.now().isoformat()
-        if task.progress == 100 and task.status != "completed":
-            task.status = "completed"
-            task.completed_at = datetime.now().isoformat()
-        self._save()
+        with self._lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return None
+            task.progress = max(0, min(100, progress))
+            task.updated_at = datetime.now().isoformat()
+            if task.progress == 100 and task.status != "completed":
+                task.status = "completed"
+                task.completed_at = datetime.now().isoformat()
+            self._save()
         return task
 
     def get_task_tree(self, task_id: str = None) -> List[Dict]:
         """Return task hierarchy as nested dicts."""
+        with self._lock:
+            return self._get_task_tree_unlocked(task_id)
+
+    def _get_task_tree_unlocked(self, task_id: str = None) -> List[Dict]:
+        """Build task tree without acquiring lock. Caller MUST hold self._lock."""
         roots = [
             t for t in self.tasks.values()
             if (task_id is None and t.parent_id is None)
@@ -306,7 +346,7 @@ class TaskManager:
         for task in sorted(roots, key=lambda t: t.priority):
             node = task.to_dict()
             node["children"] = [
-                self.get_task_tree(sub_id)[0]
+                self._get_task_tree_unlocked(sub_id)[0]
                 for sub_id in task.subtasks
                 if sub_id in self.tasks
             ]
@@ -315,19 +355,20 @@ class TaskManager:
 
     # ---- Retry logic ----
     def mark_failed_or_retry(self, task_id: str) -> str:
-        task = self.tasks.get(task_id)
-        if not task:
-            return "Task not found"
-        task.retry_count += 1
-        if task.retry_count >= task.max_retries:
-            task.status = "failed"
+        with self._lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return "Task not found"
+            task.retry_count += 1
+            if task.retry_count >= task.max_retries:
+                task.status = "failed"
+                task.updated_at = datetime.now().isoformat()
+                self._save()
+                return f"Task '{task.title}' FAILED after {task.retry_count} retries."
+            task.status = "pending"
             task.updated_at = datetime.now().isoformat()
             self._save()
-            return f"Task '{task.title}' FAILED after {task.retry_count} retries."
-        task.status = "pending"
-        task.updated_at = datetime.now().isoformat()
-        self._save()
-        return f"Task '{task.title}' retry {task.retry_count}/{task.max_retries}."
+            return f"Task '{task.title}' retry {task.retry_count}/{task.max_retries}."
 
     # ---- Summary for display ----
     def get_summary_text(self) -> str:

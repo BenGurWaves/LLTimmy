@@ -126,21 +126,21 @@ VENV_PYTHON = str(_venv_path) if _venv_path.exists() else sys.executable
 # ═══════════════════════════════════════════════════════════════════════════
 # Quiet Luxury Color Palette
 # ═══════════════════════════════════════════════════════════════════════════
-C_BG         = "#121212"    # Deep matte charcoal — the canvas
-C_SURFACE    = "#161616"    # Panel / sidebar surface
-C_SURFACE_2  = "#1e1e1e"    # Elevated surface (cards, hovers)
-C_SURFACE_3  = "#272727"    # Hover / active states
-C_BORDER     = "#1a1a1a"    # Barely-visible border
-C_BORDER_VIS = "#2c2c2c"    # Slightly more visible border for inputs
-C_ACCENT     = "#f5d06b"    # Soft pastel amber/gold — quiet luxury
-C_ACCENT_DIM = "#1e1a0f"    # Dim amber for subtle bg hints
-C_ACCENT_HOV = "#e0bc58"    # Accent hover — muted
-C_TEXT       = "#ededef"    # Primary text — warm off-white
-C_TEXT_SEC   = "#7c7c82"    # Secondary text
-C_TEXT_MUTED = "#404044"    # Muted / disabled
-C_GREEN      = "#5cbf6e"    # Online / success — softer green
-C_RED        = "#e05c54"    # Error / failure — softer red
-C_INPUT_BG   = "#191919"    # Input field background
+C_BG         = "#0f0f0f"    # Deep matte charcoal — the canvas
+C_SURFACE    = "#141414"    # Panel / sidebar surface
+C_SURFACE_2  = "#1a1a1a"    # Elevated surface (cards, hovers)
+C_SURFACE_3  = "#242424"    # Hover / active states
+C_BORDER     = "#1c1c1c"    # Barely-visible border
+C_BORDER_VIS = "#282828"    # Slightly more visible border for inputs
+C_ACCENT     = "#d4b066"    # Warm muted gold — quiet luxury (not bright)
+C_ACCENT_DIM = "#18150d"    # Dim amber for subtle bg hints
+C_ACCENT_HOV = "#c4a058"    # Accent hover — muted
+C_TEXT       = "#e8e8ea"    # Primary text — warm off-white
+C_TEXT_SEC   = "#6e6e74"    # Secondary text
+C_TEXT_MUTED = "#383840"    # Muted / disabled
+C_GREEN      = "#6abf78"    # Online / success — soft sage green
+C_RED        = "#d45a52"    # Error / failure — muted rose
+C_INPUT_BG   = "#171717"    # Input field background
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -233,9 +233,9 @@ class LLTimmyApp(ctk.CTk):
     def _build_ui(self):
         self._main_frame = ctk.CTkFrame(self, fg_color=C_BG, corner_radius=0)
         self._main_frame.pack(fill="both", expand=True)
-        # Column 0 = sidebar (fixed), column 1 = chat (flex), column 2 = debug (toggleable)
-        self._main_frame.grid_columnconfigure(0, weight=0, minsize=260)
-        self._main_frame.grid_columnconfigure(1, weight=1)
+        # Column 0 = sidebar (fixed narrow), column 1 = chat (flex), column 2 = debug (toggleable)
+        self._main_frame.grid_columnconfigure(0, weight=0, minsize=240)
+        self._main_frame.grid_columnconfigure(1, weight=1, minsize=500)
         self._main_frame.grid_columnconfigure(2, weight=0, minsize=0)
         self._main_frame.grid_rowconfigure(0, weight=1)
 
@@ -248,7 +248,7 @@ class LLTimmyApp(ctk.CTk):
     # ══════════════════════════════════════════════════════════════════
     def _build_sidebar(self):
         sb = ctk.CTkFrame(
-            self._main_frame, width=260, fg_color=C_SURFACE,
+            self._main_frame, width=240, fg_color=C_SURFACE,
             corner_radius=0, border_width=1, border_color=C_BORDER,
         )
         sb.grid(row=0, column=0, sticky="nsew")
@@ -584,6 +584,9 @@ class LLTimmyApp(ctk.CTk):
         menu.focus_set()
 
     def _refresh_tab(self, tab_name):
+        # Force reload tasks from disk to catch agent writes (thread-safe)
+        if tab_name == "Tasks":
+            task_mgr.reload_from_disk()
         dispatch = {
             "Tasks": self._render_tasks,
             "Memory": self._render_memory_stats,
@@ -974,8 +977,8 @@ class LLTimmyApp(ctk.CTk):
         # ── Chat display ──────────────────────────────────────────────
         self._chat_display = ctk.CTkTextbox(
             chat, fg_color=C_BG, text_color=C_TEXT,
-            font=("SF Pro", 12), corner_radius=0, border_width=0,
-            wrap="word", state="disabled", spacing3=5,
+            font=("SF Pro", 11), corner_radius=0, border_width=0,
+            wrap="word", state="disabled", spacing3=4,
         )
         self._chat_display.grid(row=1, column=0, sticky="nsew", padx=24, pady=(12, 0))
 
@@ -990,35 +993,35 @@ class LLTimmyApp(ctk.CTk):
         tb.tag_configure("timestamp",
                          foreground=C_TEXT_MUTED, font=("SF Mono", 9))
         tb.tag_configure("user_msg",
-                         foreground=C_TEXT, font=("SF Pro", 12),
-                         lmargin1=4, lmargin2=4, spacing1=3, spacing3=5)
+                         foreground=C_TEXT, font=("SF Pro", 11),
+                         lmargin1=4, lmargin2=4, spacing1=2, spacing3=4)
         tb.tag_configure("bot_msg",
-                         foreground="#e0e0e2", font=("SF Pro", 12),
-                         lmargin1=4, lmargin2=4, spacing1=3, spacing3=5)
+                         foreground="#dcdce0", font=("SF Pro", 11),
+                         lmargin1=4, lmargin2=4, spacing1=2, spacing3=4)
         tb.tag_configure("error_msg",
-                         foreground=C_RED, font=("SF Pro", 12))
+                         foreground=C_RED, font=("SF Pro", 11))
         tb.tag_configure("dim_msg",
                          foreground=C_TEXT_MUTED, font=("SF Mono", 10),
                          lmargin1=4, lmargin2=4, spacing1=2, spacing3=2)
         tb.tag_configure("sep", font=("SF Pro", 2))
         # Rich rendering tags (code blocks, bold, headings)
         tb.tag_configure("code_block",
-                         background="#1e1e1e", foreground="#c9d1d9",
-                         font=("SF Mono", 11),
-                         lmargin1=8, lmargin2=8, rmargin=8,
-                         spacing1=2, spacing3=2)
+                         background="#161616", foreground="#b8c0cc",
+                         font=("SF Mono", 10),
+                         lmargin1=10, lmargin2=10, rmargin=10,
+                         spacing1=3, spacing3=3)
         tb.tag_configure("code_lang",
-                         foreground=C_ACCENT, font=("SF Mono", 9, "bold"),
-                         lmargin1=8)
+                         foreground=C_ACCENT, font=("SF Mono", 8, "bold"),
+                         lmargin1=10)
         tb.tag_configure("inline_code",
-                         background="#1e1e1e", foreground="#e0e0e2",
-                         font=("SF Mono", 11))
+                         background="#161616", foreground="#d0d0d4",
+                         font=("SF Mono", 10))
         tb.tag_configure("bold_text",
-                         font=("SF Pro Display", 12, "bold"),
+                         font=("SF Pro Display", 11, "bold"),
                          foreground=C_TEXT)
         tb.tag_configure("heading",
-                         font=("SF Pro Display", 14, "bold"),
-                         foreground=C_TEXT, spacing1=8)
+                         font=("SF Pro Display", 13, "bold"),
+                         foreground=C_TEXT, spacing1=6)
 
         # ── Suggestion chips ──────────────────────────────────────────
         sug = ctk.CTkFrame(chat, fg_color="transparent", height=34)
@@ -1680,7 +1683,7 @@ class LLTimmyApp(ctk.CTk):
         threading.Thread(target=self._do_voice_capture, daemon=True).start()
 
     def _do_voice_capture(self):
-        """Use speech_recognition library if available, else macOS dictation."""
+        """Use speech_recognition library if available, else macOS native dictation."""
         try:
             import speech_recognition as sr
             recognizer = sr.Recognizer()
@@ -1690,17 +1693,22 @@ class LLTimmyApp(ctk.CTk):
                 audio = recognizer.listen(source, timeout=10, phrase_time_limit=30)
             text = recognizer.recognize_google(audio)
             self.after(0, lambda: self._insert_voice_text(text))
-        except ImportError:
-            # Inform user to install speech_recognition
-            self.after(0, lambda: self._insert_voice_text(
-                "[Voice: Install SpeechRecognition — pip install SpeechRecognition PyAudio]"
-            ))
+        except (ImportError, OSError):
+            # Fallback: macOS native speech-to-text via say/dictation
+            self._do_voice_macos_fallback()
         except Exception as e:
             logger.warning("Voice capture error: %s", e)
-            self.after(0, lambda: self._insert_voice_text(f"[Voice error: {e}]"))
+            # Try macOS fallback before showing error
+            self._do_voice_macos_fallback()
         finally:
             self._mic_recording = False
             self.after(0, lambda: self._mic_btn.configure(text_color=C_TEXT_MUTED))
+
+    def _do_voice_macos_fallback(self):
+        """Fallback: prompt user to use macOS native dictation (Fn+Fn)."""
+        self.after(0, lambda: self._insert_voice_text(
+            "[Press Fn twice to start macOS Dictation, or install: pip install SpeechRecognition PyAudio]"
+        ))
 
     def _insert_voice_text(self, text):
         """Append voice transcription to existing input text."""

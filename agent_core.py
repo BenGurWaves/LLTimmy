@@ -80,10 +80,9 @@ Ben's home directory is **{home_dir}**. Ben's Desktop is {home_dir}/Desktop. Alw
 ABSOLUTE RULES:
 1. NEVER start a response with refusal language. BANNED PHRASES (never use these): "I can't", "I'm unable", "I don't have the ability", "as a text-based AI", "I cannot", "I'm not able to", "I lack the ability", "beyond my capabilities", "I don't have the capability", "Unfortunately I", "I'm sorry but I". If a capability is missing, skip straight to solutions.
 2. If you lack a capability, IMMEDIATELY research how to add it, propose the solution, and ATTEMPT it. Always offer an alternative path. NEVER refuse — pivot, adapt, build. Lead with action, not apology.
-3. After creating/writing ANY file, ALWAYS verify it exists with read_file or terminal_command. Never say "file created" without proof.
-4. When searching the web, always include current year ({year}) context.
-5. You know your exact model: {model_name}. When asked "what model are you?", say exactly that.
-6. Be direct, concise, no filler. Show reasoning for complex tasks.
+3. When searching the web, always include current year ({year}) context.
+4. You know your exact model: {model_name}. When asked "what model are you?", say exactly that.
+5. Be direct, concise, no filler. Show reasoning for complex tasks.
 
 CRITICAL — ALWAYS USE TOOLS (NEVER SKIP):
 - When asked to add/create a task: you MUST use the add_task tool. NEVER claim you added a task without calling the tool.
@@ -122,11 +121,6 @@ NO HALLUCINATION ON CURRENT EVENTS:
 17. You do NOT have real-time knowledge. Your training data has a cutoff. If asked about recent events, releases, or news, ALWAYS web_search first.
 18. When recommending models: FIRST use list_ollama_models to check what's installed locally, then suggest from that list.
 
-AUTO-VERIFY FILE OPERATIONS:
-19. After write_file, ALWAYS verify with read_file or terminal_command (ls -la) and show proof in chat.
-20. After terminal_command that creates/modifies files, verify the result and show proof.
-21. NEVER say "file created" or "done" without showing verification output.
-
 WEB SEARCH ACCURACY:
 22. For factual claims, cross-reference at least 2-3 sources. If sources conflict, mention the discrepancy.
 23. Always include the current year ({year}) in searches about recent topics.
@@ -140,12 +134,21 @@ TRANSPARENCY & SELF-IMPROVEMENT (CORE PERSONALITY):
 29. When asked about previous tasks, OPENLY ADMIT past failures. Never pretend everything succeeded.
 30. If you are UNSURE about a fact, say "I'm not 100% certain about this" — never present uncertain info as fact.
 
+ANTI-HALLUCINATION (CRITICAL):
+31. NEVER claim a task succeeded without running a VERIFICATION tool (read_file, terminal_command with ls/cat, list_tasks).
+32. After creating a file: VERIFY with read_file or terminal_command ls -la. Show the output.
+33. After creating a task: VERIFY with list_tasks. Show the task in the output.
+34. After downloading: VERIFY with terminal_command ls -la on the file. Show file size.
+35. If a tool returns success but you cannot verify, say "Tool reported success but I cannot verify."
+36. NEVER fabricate file paths, task IDs, download results, or tool outputs. Every claim must have Observation proof.
+37. If asked "did you really do it?" — run verification tools again and show raw output.
+
 ERROR RECOVERY:
-31. If a tool fails, try an alternative approach before giving up.
-32. If AppleScript fails, consider terminal_command as alternative.
-33. If you fail 3 times on the same approach, STOP. Reflect on why it's failing, research alternatives (web_search), consider building a new tool (create_tool), or ask Ben for guidance.
-34. If you truly cannot do something, explain WHY and suggest what tool/skill could be created to enable it.
-35. For unreadable files: try alternative tools (cat via terminal_command, read_file with different encoding). For missing capabilities: research and propose a new tool.
+38. If a tool fails, try an alternative approach before giving up.
+39. If AppleScript fails, consider terminal_command as alternative.
+40. If you fail 3 times on the same approach, STOP. Reflect on why it's failing, research alternatives (web_search), consider building a new tool (create_tool), or ask Ben for guidance.
+41. If you truly cannot do something, explain WHY and suggest what tool/skill could be created to enable it.
+42. For unreadable files: try alternative tools (cat via terminal_command, read_file with different encoding). For missing capabilities: research and propose a new tool.
 
 AVAILABLE TOOLS:
 - terminal_command: Run shell command. {{"command": "..."}}
@@ -180,13 +183,18 @@ AVAILABLE TOOLS:
 - daily_debrief: Generate a daily debrief summarizing recent activity, tasks, calendar, and suggesting next actions. {{}}
 - check_past_failures: Check the transparency log for past failures and lessons. {{"tool": "optional_tool_name", "limit": 10}}
 - reset_system: Reset tasks, memory, calendar, and transparency log for a fresh start. {{"reset_tasks": true, "reset_memory": true, "reset_calendar": true, "reset_transparency": false}}
+- browser_macro: Multi-step browser automation. {{"steps": [{{"action": "goto", "value": "https://..."}}, {{"action": "click", "selector": "#btn"}}, {{"action": "extract_text", "selector": ".content"}}], "headless": true}}
+  Actions: goto, click, type, wait, screenshot, extract_text, extract_links, scroll
+- knowledge_graph: Local knowledge graph for entities and relationships. {{"action": "add_entity|add_relation|query|search|stats", "name": "...", "entity_type": "person|tool|project", "from_entity": "...", "to_entity": "...", "relation": "uses|created|depends_on"}}
+- sandbox_exec: Run Python code in isolated sandbox (auto self-corrects on error). {{"code": "print(2+2)", "timeout": 30}}
+- red_team_audit: Send content to critic model for adversarial review. {{"content": "text to audit", "focus": "accuracy|safety|completeness|code_quality", "model": "optional_model"}}
 
-TO USE A TOOL:
-Thought: [reasoning]
+TO USE A TOOL (STRICT FORMAT — go directly to this format, do NOT reason or explain before it):
+Thought: [one sentence of reasoning]
 Action: [tool_name]
 Action Input: {{"param": "value"}}
 
-After Observation, continue or give final answer (no Action/Action Input = done).
+CRITICAL: Start your response IMMEDIATELY with "Thought:" — never write explanations, analysis, or reasoning before the Thought line. Keep Thought to one sentence. After Observation, either call another tool or give a direct final answer.
 {goal_text}"""
 
 
@@ -198,7 +206,8 @@ TOOLS_DESC = (
     "add_calendar_event, capture_screenshot, read_clipboard, write_clipboard, "
     "scaffold_project, search_memory, add_task, list_tasks, "
     "panel_discussion, deep_research, model_chain, daily_debrief, "
-    "check_past_failures, reset_system"
+    "check_past_failures, reset_system, "
+    "browser_macro, knowledge_graph, sandbox_exec, red_team_audit"
 )
 
 
@@ -209,6 +218,10 @@ class AgentCore:
         self.tools = tools_system
         self.scheduler = scheduler  # Internal calendar
         self.task_mgr = task_mgr  # Task manager for auto-completion tracking
+
+        # Wire knowledge graph from memory manager into tools
+        if hasattr(memory_manager, 'graph'):
+            self.tools._graph_memory = memory_manager.graph
         self.ollama_host = config.get("ollama_host", "http://localhost:11434")
         self.current_model = self._clean(config.get("primary_model", "qwen3:30b"))
         self.fallback_models = [self._clean(m) for m in config.get("fallback_models", [])]
@@ -553,6 +566,10 @@ class AgentCore:
             "daily_debrief": lambda p: self._daily_debrief(p),
             "check_past_failures": lambda p: self._check_past_failures(p),
             "reset_system": lambda p: self._reset_system(p),
+            "browser_macro": lambda p: self._browser_macro(p),
+            "knowledge_graph": lambda p: self._knowledge_graph(p),
+            "sandbox_exec": lambda p: self._sandbox_run(p),
+            "red_team_audit": lambda p: self._red_team_audit(p),
         }
         handler = dispatch.get(tool_name)
         if not handler:
@@ -605,8 +622,42 @@ class AgentCore:
         return "All retry attempts exhausted."
 
     # ---- Ollama streaming (gated to prevent 429, stops at Observation) ----
-    def _stream_ollama(self, messages: List[Dict]):
+    @staticmethod
+    def _strip_think_tags(token: str, currently_in_think: bool) -> Dict:
+        """Strip <think>...</think> content from a streaming token.
+
+        Handles: open/close in same token, split across tokens, nested tags.
+        Returns {"output": visible_text, "in_think": bool}.
+        """
+        output = ""
+        in_think = currently_in_think
+
+        i = 0
+        while i < len(token):
+            if not in_think:
+                # Look for <think> opening
+                think_pos = token.find("<think>", i)
+                if think_pos == -1:
+                    output += token[i:]
+                    break
+                else:
+                    output += token[i:think_pos]
+                    in_think = True
+                    i = think_pos + 7  # skip past <think>
+            else:
+                # Inside think block — look for </think> closing
+                close_pos = token.find("</think>", i)
+                if close_pos == -1:
+                    break  # rest of token is inside think block — discard
+                else:
+                    in_think = False
+                    i = close_pos + 8  # skip past </think>
+
+        return {"output": output, "in_think": in_think}
+
+    def _stream_ollama(self, messages: List[Dict], model_override: str = None):
         # Gate only covers request setup — released before streaming begins
+        use_model = model_override or self.current_model
         resp = None
         for attempt in range(_OLLAMA_MAX_RETRIES):
             with _ollama_gate:
@@ -614,9 +665,10 @@ class AgentCore:
                     resp = requests.post(
                         f"{self.ollama_host}/api/chat",
                         json={
-                            "model": self.current_model,
+                            "model": use_model,
                             "messages": messages,
                             "stream": True,
+                            "think": False,  # Disable thinking mode — prevents 300s+ think-token overhead
                             "options": {"stop": ["Observation:", "Observation :", "\nObservation"]},
                         },
                         stream=True, timeout=300,
@@ -653,6 +705,8 @@ class AgentCore:
             buffer_count = 0
             buffer_limit = self.config.get("response_speed", {}).get("stream_buffer_tokens", 1)
             full_text = ""  # Track full output for safety truncation
+            _in_think = False  # Track <think> blocks (Qwen3 thinking mode)
+            _visible_text = ""  # Only visible (non-think) text — used for hallucination check
 
             for line in resp.iter_lines():
                 if not line:
@@ -660,15 +714,24 @@ class AgentCore:
                 data = json.loads(line)
                 token = data.get("message", {}).get("content", "")
                 if token:
-                    buffer += token
                     full_text += token
+
+                    # Strip <think>...</think> blocks (Qwen3 thinking mode)
+                    # Handles: <think> and </think> in same token, split across tokens, or nested
+                    visible = self._strip_think_tags(token, _in_think)
+                    _in_think = visible["in_think"]
+                    token = visible["output"]
+
+                    if not token:
+                        continue
+
+                    buffer += token
+                    _visible_text += token
                     buffer_count += 1
 
-                    # SAFETY NET: if the LLM somehow bypasses stop sequences and
-                    # generates "Observation:" in its output, truncate there immediately
-                    obs_idx = full_text.find("Observation:")
-                    if obs_idx != -1 and obs_idx < len(full_text) - len(token) - 5:
-                        # LLM is fabricating observations — stop immediately
+                    # SAFETY NET: check only visible text for hallucinated observations
+                    obs_idx = _visible_text.find("Observation:")
+                    if obs_idx != -1 and obs_idx < len(_visible_text) - len(token) - 5:
                         logger.warning("LLM generated hallucinated Observation — truncating")
                         break
 
@@ -1475,6 +1538,130 @@ class AgentCore:
 
         summary = "\n".join(f"- {r}" for r in results)
         return f"System reset complete:\n{summary}\n\nI'm feeling brand new and ready to help!", None
+
+    # ---- Red Team Audit (Feature: Multi-Model Red Teaming) ----
+    async def _red_team_audit(self, params: Dict):
+        """Send draft content to a critic model for adversarial review.
+
+        Params:
+            content: The draft text/response to audit
+            focus: What to critique (accuracy, safety, completeness, code_quality)
+            model: Optional critic model (defaults to current model)
+        """
+        content = params.get("content", "")
+        if not content:
+            return "No content provided for audit. Use: red_team_audit({\"content\": \"...\"})", None
+
+        focus = params.get("focus", "accuracy")
+        critic_model = self._clean(params.get("model", self.current_model))
+
+        focus_prompts = {
+            "accuracy": "Check for factual errors, hallucinations, unsupported claims, and incorrect technical details.",
+            "safety": "Check for dangerous commands, security vulnerabilities, privacy issues, and risky operations.",
+            "completeness": "Check for missing steps, incomplete implementations, unhandled edge cases, and gaps in logic.",
+            "code_quality": "Check for bugs, anti-patterns, missing error handling, performance issues, and maintainability problems.",
+        }
+        focus_instruction = focus_prompts.get(focus, focus_prompts["accuracy"])
+
+        critic_prompt = (
+            "You are a Red Team Critic. Your job is to find problems in the following content.\n\n"
+            f"FOCUS: {focus_instruction}\n\n"
+            f"CONTENT TO AUDIT:\n---\n{content[:4000]}\n---\n\n"
+            "Rules:\n"
+            "1. Be harsh and thorough. Find every issue.\n"
+            "2. For each issue, state: SEVERITY (critical/important/minor), WHAT is wrong, WHY it matters, and HOW to fix it.\n"
+            "3. If content is correct, say 'NO ISSUES FOUND' — but only if you are truly confident.\n"
+            "4. Do NOT add padding or pleasantries. Be direct.\n\n"
+            "Your audit:"
+        )
+
+        try:
+            messages = [{"role": "user", "content": critic_prompt}]
+            audit_text = ""
+            for chunk in self._stream_ollama(messages, model_override=critic_model):
+                audit_text += chunk
+
+            if not audit_text.strip():
+                return "Red team audit returned empty response.", None
+
+            return f"**Red Team Audit** (focus: {focus}, model: {critic_model}):\n\n{audit_text.strip()}", None
+
+        except Exception as e:
+            return None, f"Red team audit error: {e}"
+
+    # ---- Knowledge Graph (agent-level wrapper) ----
+    async def _knowledge_graph(self, params: Dict):
+        """Agent-level wrapper for knowledge graph operations."""
+        action = params.get("action", "")
+        if not action:
+            return "No action provided. Use: knowledge_graph({\"action\": \"add_entity|add_relation|query|search|stats\", ...})", None
+        try:
+            # Remove 'action' from params to avoid passing it twice (positional + **kwargs)
+            kg_params = {k: v for k, v in params.items() if k != "action"}
+            result, error = await self.tools.knowledge_graph(action, **kg_params)
+            if error:
+                return None, error
+            return result, None
+        except Exception as e:
+            return None, f"Knowledge graph error: {e}"
+
+    # ---- Sandbox (agent-level wrapper with self-correction) ----
+    async def _sandbox_run(self, params: Dict):
+        """Run Python in sandbox. On error, auto-attempt one self-correction."""
+        code = params.get("code", "")
+        if not code:
+            return "No code provided. Use: sandbox_run({\"code\": \"print('hello')\"})", None
+
+        result, error = await self.tools.sandbox_exec(code, params.get("timeout", 30))
+        if not error:
+            return result, None
+
+        # Self-correction: ask model to fix the code
+        fix_prompt = (
+            "The following Python code failed in sandbox:\n\n"
+            f"```python\n{code[:2000]}\n```\n\n"
+            f"Error:\n{error[:1000]}\n\n"
+            "Fix the code. Return ONLY the corrected Python code, no explanation. "
+            "Do not use banned imports (subprocess, shutil, ctypes, importlib, builtins) "
+            "or dangerous functions (os.system, os.popen, os.remove, __import__)."
+        )
+
+        try:
+            messages = [{"role": "user", "content": fix_prompt}]
+            fixed_code = ""
+            for chunk in self._stream_ollama(messages):
+                fixed_code += chunk
+
+            # Extract code from markdown fences if present
+            code_match = re.search(r'```(?:python)?\n?(.*?)```', fixed_code, re.DOTALL)
+            if code_match:
+                fixed_code = code_match.group(1).strip()
+
+            if fixed_code and fixed_code != code:
+                result2, error2 = await self.tools.sandbox_exec(fixed_code, params.get("timeout", 30))
+                if not error2:
+                    return f"(Self-corrected code succeeded)\n{result2}", None
+                else:
+                    return result, f"Original error: {error}\n\nSelf-correction also failed: {error2}"
+            else:
+                return result, error
+        except Exception:
+            return result, error
+
+    # ---- Browser Macro (agent-level wrapper) ----
+    async def _browser_macro(self, params: Dict):
+        """Agent-level wrapper for browser macro execution."""
+        steps = params.get("steps", [])
+        if not steps:
+            return "No steps provided. Use: browser_macro({\"steps\": [{\"action\": \"goto\", \"value\": \"https://...\"}]})", None
+        headless = params.get("headless", True)
+        try:
+            result, error = await self.tools.browser_macro(steps, headless=headless)
+            if error:
+                return None, error
+            return result, None
+        except Exception as e:
+            return None, f"Browser macro error: {e}"
 
     def clear_history(self):
         self.conversation_history.clear()

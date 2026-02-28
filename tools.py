@@ -1218,3 +1218,241 @@ class ToolsSystem:
 
         except Exception as e:
             return "", f"Screenshot error: {e}"
+
+    # ---- browser_macro (Feature: Browser-Based Macros) --------------------
+    async def browser_macro(self, steps: List[Dict], headless: bool = True) -> Tuple[str, str]:
+        """Execute multi-step browser automation macro via Playwright.
+
+        steps: list of dicts, each with:
+            action: goto|click|type|wait|screenshot|extract_text|extract_links|scroll
+            selector: CSS selector (for click/type/extract_text)
+            value: URL (for goto), text (for type), seconds (for wait), pixels (for scroll)
+            timeout: per-step timeout in ms (default 10000)
+
+        Returns accumulated results from all steps.
+        """
+        self.log_tool_call("browser_macro", {"steps": len(steps)}, "starting")
+
+        if not steps or not isinstance(steps, list):
+            return "", "No steps provided. Use: browser_macro({\"steps\": [{\"action\": \"goto\", \"value\": \"https://...\"}]})"
+
+        # Build a Playwright script from the steps
+        script_lines = [
+            "import asyncio, json, sys, os",
+            "from playwright.async_api import async_playwright",
+            "",
+            "async def run_macro():",
+            "    steps = json.loads(os.environ['BM_STEPS'])",
+            "    results = []",
+            "    async with async_playwright() as p:",
+            f"        browser = await p.chromium.launch(headless={'True' if headless else 'False'})",
+            "        page = await browser.new_page(viewport={'width': 1280, 'height': 900})",
+            "        try:",
+            "            for i, step in enumerate(steps):",
+            "                action = step.get('action', '')",
+            "                selector = step.get('selector', '')",
+            "                value = step.get('value', '')",
+            "                timeout = step.get('timeout', 10000)",
+            "                try:",
+            "                    if action == 'goto':",
+            "                        await page.goto(value, wait_until='domcontentloaded', timeout=timeout)",
+            "                        results.append(f'Step {i+1}: Navigated to {value}')",
+            "                    elif action == 'click':",
+            "                        await page.click(selector, timeout=timeout)",
+            "                        results.append(f'Step {i+1}: Clicked {selector}')",
+            "                    elif action == 'type':",
+            "                        await page.fill(selector, value, timeout=timeout)",
+            "                        results.append(f'Step {i+1}: Typed into {selector}')",
+            "                    elif action == 'wait':",
+            "                        await page.wait_for_timeout(int(float(value) * 1000))",
+            "                        results.append(f'Step {i+1}: Waited {value}s')",
+            "                    elif action == 'screenshot':",
+            "                        path = value or f'/tmp/macro_step_{i+1}.png'",
+            "                        await page.screenshot(path=path, full_page=True)",
+            "                        results.append(f'Step {i+1}: Screenshot saved to {path}')",
+            "                    elif action == 'extract_text':",
+            "                        if selector:",
+            "                            el = await page.query_selector(selector)",
+            "                            text = await el.inner_text() if el else '(element not found)'",
+            "                        else:",
+            "                            text = await page.inner_text('body')",
+            "                        text = text[:2000]",
+            "                        results.append(f'Step {i+1}: Extracted text ({len(text)} chars): {text}')",
+            "                    elif action == 'extract_links':",
+            "                        links = await page.eval_on_selector_all('a[href]', 'els => els.map(e => ({text: e.innerText.trim().substring(0,80), href: e.href})).filter(l => l.text && l.href.startsWith(\"http\")).slice(0,30)')",
+            "                        results.append(f'Step {i+1}: Found {len(links)} links: ' + json.dumps(links[:20]))",
+            "                    elif action == 'scroll':",
+            "                        await page.evaluate(f'window.scrollBy(0, {int(value or 500)})')",
+            "                        results.append(f'Step {i+1}: Scrolled {value or 500}px')",
+            "                    else:",
+            "                        results.append(f'Step {i+1}: Unknown action {action}')",
+            "                except Exception as e:",
+            "                    results.append(f'Step {i+1}: ERROR ({action}): {e}')",
+            "        finally:",
+            "            await browser.close()",
+            "    print(json.dumps(results))",
+            "",
+            "asyncio.run(run_macro())",
+        ]
+        script = "\n".join(script_lines)
+
+        try:
+            env = {**os.environ, "BM_STEPS": json.dumps(steps)}
+            proc = subprocess.run(
+                [self._venv_python, "-c", script],
+                capture_output=True, text=True, timeout=120, env=env,
+            )
+            if proc.returncode == 0:
+                try:
+                    results = json.loads(proc.stdout.strip())
+                    output = "\n".join(results)
+                except json.JSONDecodeError:
+                    output = proc.stdout.strip() or "(no output)"
+                self.log_tool_call("browser_macro", {"steps": len(steps)}, output[:300])
+                return output, ""
+            else:
+                error = proc.stderr[:500] if proc.stderr else "Unknown error"
+                return "", f"Browser macro failed: {error}"
+        except subprocess.TimeoutExpired:
+            return "", "Browser macro timed out (120s limit)"
+        except Exception as e:
+            return "", f"Browser macro error: {e}"
+
+    # ---- sandbox_exec (Feature: Self-Correcting Tool Sandbox) -------------
+    async def sandbox_exec(self, code: str, timeout: int = 30) -> Tuple[str, str]:
+        """Run Python code in an isolated subprocess sandbox.
+
+        The code runs in a fresh Python interpreter with no access to Timmy internals.
+        Returns (stdout, stderr). Caller (agent) can self-correct if errors occur.
+        """
+        self.log_tool_call("sandbox_exec", {"code_len": len(code)}, "starting")
+
+        if not code or not code.strip():
+            return "", "No code provided. Use: sandbox_exec({\"code\": \"print('hello')\"})"
+
+        # Safety checks
+        BANNED_IMPORTS = ["subprocess", "shutil", "ctypes", "importlib", "builtins", "os"]
+        for banned in BANNED_IMPORTS:
+            if f"import {banned}" in code or f"from {banned}" in code:
+                return "", f"Sandbox security: '{banned}' import is not allowed in sandbox."
+
+        # Check for dangerous patterns
+        DANGEROUS = [
+            (r"\bos\.system\b", "os.system"),
+            (r"\bos\.popen\b", "os.popen"),
+            (r"\bos\.remove\b", "os.remove"),
+            (r"\bos\.unlink\b", "os.unlink"),
+            (r"\bos\.rmdir\b", "os.rmdir"),
+            (r"\b__import__\b", "__import__"),
+        ]
+        for pattern, name in DANGEROUS:
+            if re.search(pattern, code):
+                return "", f"Sandbox security: '{name}' is not allowed. Use Timmy's tools instead."
+
+        try:
+            # Run in isolated subprocess with restricted environment
+            env = {
+                "PATH": os.environ.get("PATH", "/usr/bin:/usr/local/bin"),
+                "HOME": os.environ.get("HOME", "/tmp"),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+            proc = subprocess.run(
+                [self._venv_python, "-c", code],
+                capture_output=True, text=True,
+                timeout=min(timeout, 60),  # Hard cap at 60s
+                env=env,
+                cwd="/tmp",  # Sandboxed working directory
+            )
+            stdout = proc.stdout[:5000] if proc.stdout else ""
+            stderr = proc.stderr[:2000] if proc.stderr else ""
+
+            if proc.returncode == 0:
+                result = stdout or "(no output)"
+                self.log_tool_call("sandbox_exec", {"code_len": len(code)}, f"OK: {result[:200]}")
+                return result, ""
+            else:
+                error_msg = stderr or f"Exit code {proc.returncode}"
+                self.log_tool_call("sandbox_exec", {"code_len": len(code)}, f"ERROR: {error_msg[:200]}")
+                return stdout, f"Sandbox error (exit {proc.returncode}):\n{error_msg}"
+
+        except subprocess.TimeoutExpired:
+            return "", f"Sandbox execution timed out after {timeout}s"
+        except Exception as e:
+            return "", f"Sandbox error: {e}"
+
+    # ---- knowledge_graph (Feature: Local Knowledge Graph) -----------------
+    async def knowledge_graph(self, action: str, **kwargs) -> Tuple[str, str]:
+        """Interact with the local knowledge graph.
+
+        Actions:
+            add_entity: name, entity_type, properties (dict)
+            add_relation: from_entity, to_entity, relation
+            query: entity_name (returns entity + all relationships)
+            search: query (fuzzy search across entities)
+            stats: show graph statistics
+        """
+        self.log_tool_call("knowledge_graph", {"action": action}, "starting")
+
+        if not hasattr(self, '_graph_memory'):
+            return "", "Knowledge graph not initialized. Memory manager required."
+
+        try:
+            if action == "add_entity":
+                name = kwargs.get("name", "")
+                if not name:
+                    return "", "Entity name required."
+                entity_type = kwargs.get("entity_type", "general")
+                properties = kwargs.get("properties", {})
+                self._graph_memory.add_entity(name, entity_type, properties)
+                return f"Entity '{name}' (type: {entity_type}) added to knowledge graph.", ""
+
+            elif action == "add_relation":
+                from_e = kwargs.get("from_entity", "")
+                to_e = kwargs.get("to_entity", "")
+                relation = kwargs.get("relation", "")
+                if not all([from_e, to_e, relation]):
+                    return "", "Required: from_entity, to_entity, relation"
+                self._graph_memory.add_relationship(from_e, to_e, relation)
+                return f"Relation added: {from_e} --[{relation}]--> {to_e}", ""
+
+            elif action == "query":
+                entity_name = kwargs.get("entity_name", "") or kwargs.get("name", "")
+                if not entity_name:
+                    return "", "Entity name required for query."
+                entity = self._graph_memory.get_entity(entity_name)
+                if not entity:
+                    return f"Entity '{entity_name}' not found in knowledge graph.", ""
+                rels = self._graph_memory.get_relationships(entity_name)
+                lines = [f"Entity: {entity['name']} (type: {entity['type']})"]
+                if entity.get("properties"):
+                    lines.append(f"Properties: {json.dumps(entity['properties'])}")
+                if rels:
+                    lines.append(f"Relationships ({len(rels)}):")
+                    for r in rels:
+                        lines.append(f"  {r['from']} --[{r['relation']}]--> {r['to']}")
+                else:
+                    lines.append("No relationships found.")
+                return "\n".join(lines), ""
+
+            elif action == "search":
+                query = kwargs.get("query", "")
+                if not query:
+                    return "", "Search query required."
+                results = self._graph_memory.search_entities(query)
+                if not results:
+                    return f"No entities matching '{query}'.", ""
+                lines = [f"Found {len(results)} entities:"]
+                for r in results[:15]:
+                    rels = self._graph_memory.get_relationships(r["name"])
+                    lines.append(f"  - {r['name']} (type: {r['type']}, {len(rels)} relations)")
+                return "\n".join(lines), ""
+
+            elif action == "stats":
+                summary = self._graph_memory.get_summary()
+                return summary, ""
+
+            else:
+                return "", f"Unknown knowledge_graph action: {action}. Use: add_entity, add_relation, query, search, stats"
+
+        except Exception as e:
+            return "", f"Knowledge graph error: {e}"
