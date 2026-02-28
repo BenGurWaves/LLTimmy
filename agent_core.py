@@ -157,7 +157,7 @@ AVAILABLE TOOLS:
 - extract_zip: Extract zip. {{"zip_path": "...", "dest_dir": "..."}}
 - run_blender: Blender operations. {{"command": "...", "gui": false}}
 - run_applescript: AppleScript. {{"script": "..."}}
-- run_comfyui_workflow: ComfyUI. {{"workflow_id": "..."}}
+- run_comfyui_workflow: Submit ComfyUI workflow and retrieve output images. {{"workflow_file": "~/path/to/workflow.json"}} or {{"workflow_json": {{...}}}} or {{"workflow_id": "name"}}
 - open_application: Open macOS app. {{"app_name": "...", "foreground": true}}
 - github_operations: Git ops. {{"action": "create|push|clone", "repo_name": "..."}}
 - create_tool: Write new tool to sandbox. {{"name": "...", "code": "..."}}
@@ -166,6 +166,10 @@ AVAILABLE TOOLS:
 - manage_ollama_model: Pull or remove model. {{"action": "pull|remove", "model_name": "..."}}
 - send_notification: macOS notification. {{"title": "...", "message": "...", "sound": true}}
 - add_calendar_event: Add internal calendar event. {{"title": "...", "due": "YYYY-MM-DD HH:MM or +1h/+30m/+2d", "recurring": "daily|weekly|monthly|null"}}
+- read_clipboard: Read the macOS clipboard contents. {{}}
+- write_clipboard: Write content to macOS clipboard. {{"content": "text to copy"}}
+- scaffold_project: Create a complete project from template. {{"project_type": "blender_addon|blender_script|comfyui_node|website|python_package|react_app|nextjs_app", "name": "MyProject", "dest_dir": "~/Desktop"}}
+- terminal_command_stream: Run a long command with live output (builds, renders, training). {{"command": "npm install", "timeout": 300}}
 - capture_screenshot: Take a screenshot for debugging. {{"target": "desktop|timmy|doctor|<url>", "save_path": "optional_path.png"}}
 - search_memory: Search your memory (subconscious + conscious). {{"query": "search terms", "n": 5}}
 - add_task: Create a task in the task manager. {{"title": "...", "description": "...", "urgency": "critical|high|normal|low", "schedule": "now|idle|scheduled"}}
@@ -187,11 +191,12 @@ After Observation, continue or give final answer (no Action/Action Input = done)
 
 
 TOOLS_DESC = (
-    "terminal_command, write_file, read_file, web_search, playwright_browser, "
-    "download_url, extract_zip, run_blender, run_applescript, run_comfyui_workflow, "
-    "open_application, github_operations, create_tool, check_service_status, "
-    "list_ollama_models, manage_ollama_model, send_notification, add_calendar_event, "
-    "capture_screenshot, search_memory, add_task, list_tasks, "
+    "terminal_command, terminal_command_stream, write_file, read_file, web_search, "
+    "playwright_browser, download_url, extract_zip, run_blender, run_applescript, "
+    "run_comfyui_workflow, open_application, github_operations, create_tool, "
+    "check_service_status, list_ollama_models, manage_ollama_model, send_notification, "
+    "add_calendar_event, capture_screenshot, read_clipboard, write_clipboard, "
+    "scaffold_project, search_memory, add_task, list_tasks, "
     "panel_discussion, deep_research, model_chain, daily_debrief, "
     "check_past_failures, reset_system"
 )
@@ -222,6 +227,9 @@ class AgentCore:
         # Tool result cache (prevents redundant calls within a session)
         self._tool_cache: Dict[str, Dict] = {}  # key -> {result, timestamp}
         self._cache_ttl = 30  # seconds before cache entry expires
+
+        # Streaming terminal callback (set by UI layer)
+        self._stream_line_callback = None
 
         # Transparency & Self-Improvement Engine
         self._transparency_log_path = Path.home() / "LLTimmy" / "memory" / "transparency_log.json"
@@ -518,7 +526,8 @@ class AgentCore:
             "extract_zip": lambda p: self.tools.extract_zip(p.get("zip_path", ""), p.get("dest_dir")),
             "run_blender": lambda p: self.tools.run_blender(p.get("command", ""), p.get("gui", False)),
             "run_applescript": lambda p: self.tools.run_applescript(p.get("script", "")),
-            "run_comfyui_workflow": lambda p: self.tools.run_comfyui_workflow(p.get("workflow_id")),
+            "run_comfyui_workflow": lambda p: self.tools.run_comfyui_workflow(
+                p.get("workflow_id"), p.get("workflow_file"), p.get("workflow_json"), p.get("poll_timeout", 120)),
             "open_application": lambda p: self.tools.open_application(p.get("app_name", ""), p.get("foreground", True)),
             "github_operations": lambda p: self.tools.github_operations(p.get("action", ""), p.get("repo_name"), p.get("token")),
             "create_tool": lambda p: self.tools.create_tool(p.get("name", ""), p.get("code", "")),
@@ -527,6 +536,13 @@ class AgentCore:
             "manage_ollama_model": lambda p: self.tools.manage_ollama_model(p.get("action", ""), p.get("model_name", "")),
             "send_notification": lambda p: self.tools.send_notification(p.get("title", "Timmy"), p.get("message", ""), p.get("sound", True)),
             "add_calendar_event": lambda p: self._add_calendar_event(p),
+            "read_clipboard": lambda p: self.tools.read_clipboard(),
+            "write_clipboard": lambda p: self.tools.write_clipboard(p.get("content", "")),
+            "scaffold_project": lambda p: self.tools.scaffold_project(
+                p.get("project_type", ""), p.get("name", ""), p.get("dest_dir")),
+            "terminal_command_stream": lambda p: self.tools.terminal_command_stream(
+                p.get("command", ""), stream_callback=self._stream_line_callback,
+                timeout=p.get("timeout", 300)),
             "capture_screenshot": lambda p: self.tools.capture_screenshot(p.get("target", "desktop"), p.get("save_path")),
             "search_memory": lambda p: self._search_memory(p),
             "add_task": lambda p: self._add_task(p),

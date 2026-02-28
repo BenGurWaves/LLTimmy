@@ -615,18 +615,94 @@ class ToolsSystem:
         except Exception as e:
             return "", f"AppleScript error: {e}"
 
-    # ---- run_comfyui_workflow --------------------------------------------
-    async def run_comfyui_workflow(self, workflow_id: str = None) -> Tuple[str, str]:
+    # ---- run_comfyui_workflow (FULL: queue, poll, retrieve images) --------
+    async def run_comfyui_workflow(self, workflow_id: str = None,
+                                    workflow_file: str = None,
+                                    workflow_json: dict = None,
+                                    poll_timeout: int = 120) -> Tuple[str, str]:
+        """Submit a ComfyUI workflow and retrieve output image paths."""
+        import time as _time
+        host = "http://localhost:8188"
+
+        # 1. Check ComfyUI is alive
         try:
-            resp = requests.get("http://localhost:8188/system_stats", timeout=5)
-            status = "ComfyUI is running on localhost:8188."
-            if workflow_id:
-                status += f" Workflow: {workflow_id}"
-            return status, ""
+            requests.get(f"{host}/system_stats", timeout=5)
         except requests.ConnectionError:
-            return "", "ComfyUI not running. Start it first, or I can launch it if you tell me the path."
+            return "", "ComfyUI not running on localhost:8188. Start it first."
         except Exception as e:
             return "", f"ComfyUI error: {e}"
+
+        # 2. Load workflow
+        payload = None
+        if workflow_json and isinstance(workflow_json, dict):
+            payload = workflow_json
+        elif workflow_file:
+            p = Path(os.path.expanduser(workflow_file))
+            if not p.exists():
+                return "", f"Workflow file not found: {p}"
+            try:
+                payload = json.loads(p.read_text())
+            except json.JSONDecodeError as e:
+                return "", f"Invalid JSON in workflow file: {e}"
+        elif workflow_id:
+            # Search common workflow directories
+            search_paths = [
+                Path.home() / "ComfyUI" / "workflows" / f"{workflow_id}.json",
+                Path.home() / "ComfyUI" / "user" / "default" / "workflows" / f"{workflow_id}.json",
+                Path.home() / "Downloads" / f"{workflow_id}.json",
+                Path.home() / "Desktop" / f"{workflow_id}.json",
+            ]
+            for sp in search_paths:
+                if sp.exists():
+                    try:
+                        payload = json.loads(sp.read_text())
+                    except json.JSONDecodeError:
+                        continue
+                    break
+            if payload is None:
+                return "", f"Workflow '{workflow_id}' not found. Searched: {', '.join(str(s.parent) for s in search_paths)}"
+        else:
+            return "", "Provide workflow_file, workflow_json, or workflow_id."
+
+        # 3. Queue the prompt
+        try:
+            resp = requests.post(f"{host}/prompt", json={"prompt": payload}, timeout=15)
+            if resp.status_code != 200:
+                return "", f"ComfyUI rejected workflow (HTTP {resp.status_code}): {resp.text[:300]}"
+            prompt_id = resp.json().get("prompt_id")
+            if not prompt_id:
+                return "", f"No prompt_id in ComfyUI response: {resp.text[:300]}"
+        except Exception as e:
+            return "", f"ComfyUI queue error: {e}"
+
+        # 4. Poll for completion
+        deadline = _time.time() + poll_timeout
+        while _time.time() < deadline:
+            try:
+                hist = requests.get(f"{host}/history/{prompt_id}", timeout=10).json()
+                if prompt_id in hist:
+                    outputs = hist[prompt_id].get("outputs", {})
+                    image_paths = []
+                    for node_id, node_out in outputs.items():
+                        for img in node_out.get("images", []):
+                            fname = img.get("filename", "")
+                            subfolder = img.get("subfolder", "")
+                            out_dir = Path.home() / "ComfyUI" / "output"
+                            if subfolder:
+                                out_dir = out_dir / subfolder
+                            full_path = out_dir / fname
+                            if full_path.exists():
+                                image_paths.append(str(full_path))
+                    self.log_tool_call("run_comfyui_workflow",
+                                       {"prompt_id": prompt_id}, str(image_paths))
+                    if image_paths:
+                        return f"Workflow complete. Images:\n" + "\n".join(image_paths), ""
+                    return f"Workflow complete (prompt_id={prompt_id}), no image outputs found.", ""
+            except Exception:
+                pass
+            _time.sleep(2)
+
+        return "", f"ComfyUI timed out after {poll_timeout}s. prompt_id={prompt_id}"
 
     # ---- open_application (IMPROVED: proper macOS paths + verification) --
     async def open_application(self, app_name: str, foreground: bool = True) -> Tuple[str, str]:
@@ -820,6 +896,232 @@ class ToolsSystem:
             return f"Notification sent: {title}", ""
         except Exception as e:
             return "", f"Notification error: {e}"
+
+    # ---- read_clipboard ---------------------------------------------------
+    async def read_clipboard(self) -> Tuple[str, str]:
+        """Read the current macOS clipboard contents."""
+        try:
+            proc = subprocess.run(
+                ["pbpaste"], capture_output=True, timeout=5,
+            )
+            content = proc.stdout.decode("utf-8", errors="replace")
+            self.log_tool_call("read_clipboard", {}, f"({len(content)} chars read)")
+            return content[:8000] or "(clipboard is empty)", ""
+        except Exception as e:
+            return "", f"Clipboard read error: {e}"
+
+    # ---- write_clipboard --------------------------------------------------
+    async def write_clipboard(self, content: str) -> Tuple[str, str]:
+        """Write content to the macOS clipboard."""
+        try:
+            proc = subprocess.run(
+                ["pbcopy"], input=content.encode("utf-8"),
+                capture_output=True, timeout=5,
+            )
+            if proc.returncode != 0:
+                return "", f"Clipboard write error: {proc.stderr.decode()}"
+            self.log_tool_call("write_clipboard", {"length": len(content)}, "ok")
+            return f"Copied to clipboard ({len(content)} chars)", ""
+        except Exception as e:
+            return "", f"Clipboard write error: {e}"
+
+    # ---- scaffold_project -------------------------------------------------
+    _SCAFFOLD_TEMPLATES = {
+        "blender_addon": {
+            "__init__.py": (
+                'bl_info = {{\n'
+                '    "name": "{name}",\n'
+                '    "blender": (4, 0, 0),\n'
+                '    "category": "Object",\n'
+                '    "version": (1, 0, 0),\n'
+                '    "author": "Ben",\n'
+                '    "description": "Generated by LLTimmy",\n'
+                '}}\n\n'
+                'import bpy\n\n'
+                'class {class_name}Operator(bpy.types.Operator):\n'
+                '    bl_idname = "object.{snake_name}"\n'
+                '    bl_label = "{name}"\n\n'
+                '    def execute(self, context):\n'
+                '        return {{"FINISHED"}}\n\n'
+                'def register():\n'
+                '    bpy.utils.register_class({class_name}Operator)\n\n'
+                'def unregister():\n'
+                '    bpy.utils.unregister_class({class_name}Operator)\n'
+            ),
+        },
+        "blender_script": {
+            "script.py": (
+                'import bpy\n\n'
+                '# {name}\n'
+                'scene = bpy.context.scene\n\n'
+                '# Your script logic here\n'
+            ),
+        },
+        "comfyui_node": {
+            "{snake_name}.py": (
+                'class {class_name}:\n'
+                '    @classmethod\n'
+                '    def INPUT_TYPES(cls):\n'
+                '        return {{"required": {{"image": ("IMAGE",)}}}}\n\n'
+                '    RETURN_TYPES = ("IMAGE",)\n'
+                '    FUNCTION = "process"\n'
+                '    CATEGORY = "LLTimmy"\n\n'
+                '    def process(self, image):\n'
+                '        return (image,)\n\n'
+                'NODE_CLASS_MAPPINGS = {{"{class_name}": {class_name}}}\n'
+                'NODE_DISPLAY_NAME_MAPPINGS = {{"{class_name}": "{name}"}}\n'
+            ),
+        },
+        "website": {
+            "index.html": (
+                '<!DOCTYPE html>\n'
+                '<html lang="en">\n'
+                '<head>\n'
+                '  <meta charset="UTF-8">\n'
+                '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
+                '  <title>{name}</title>\n'
+                '  <link rel="stylesheet" href="style.css">\n'
+                '</head>\n'
+                '<body>\n'
+                '  <h1>{name}</h1>\n'
+                '  <script src="main.js"></script>\n'
+                '</body>\n'
+                '</html>'
+            ),
+            "style.css": "* {{ box-sizing: border-box; margin: 0; padding: 0; }}\nbody {{ font-family: system-ui, sans-serif; }}",
+            "main.js": "// {name}\nconsole.log('{name} loaded');",
+        },
+        "python_package": {
+            "{snake_name}/__init__.py": '"""{name} package."""\n__version__ = "0.1.0"\n',
+            "{snake_name}/core.py": "# Core logic for {name}\n",
+            "tests/__init__.py": "",
+            "tests/test_core.py": "from {snake_name} import core\n\ndef test_placeholder():\n    pass\n",
+            "pyproject.toml": '[project]\nname = "{snake_name}"\nversion = "0.1.0"\n',
+        },
+        "react_app": {
+            "index.html": (
+                '<!DOCTYPE html>\n<html>\n<head><meta charset="UTF-8">'
+                '<title>{name}</title></head>\n'
+                '<body><div id="root"></div>'
+                '<script type="module" src="/src/main.jsx"></script>'
+                '</body>\n</html>'
+            ),
+            "src/main.jsx": (
+                "import React from 'react';\n"
+                "import ReactDOM from 'react-dom/client';\n"
+                "import App from './App';\n"
+                "ReactDOM.createRoot(document.getElementById('root')).render(<App />);\n"
+            ),
+            "src/App.jsx": "export default function App() {{\n  return <h1>{name}</h1>;\n}}\n",
+            "package.json": (
+                '{{\n  "name": "{snake_name}",\n'
+                '  "scripts": {{"dev": "vite", "build": "vite build"}},\n'
+                '  "dependencies": {{"react": "^18", "react-dom": "^18"}},\n'
+                '  "devDependencies": {{"vite": "^5", "@vitejs/plugin-react": "^4"}}\n}}\n'
+            ),
+            "vite.config.js": "import {{ defineConfig }} from 'vite';\nimport react from '@vitejs/plugin-react';\nexport default defineConfig({{ plugins: [react()] }});\n",
+        },
+        "nextjs_app": {
+            "app/page.tsx": (
+                "export default function Home() {{\n"
+                "  return <main><h1>{name}</h1></main>;\n"
+                "}}\n"
+            ),
+            "app/layout.tsx": (
+                "export default function RootLayout({{ children }}: {{ children: React.ReactNode }}) {{\n"
+                "  return <html lang='en'><body>{{children}}</body></html>;\n"
+                "}}\n"
+            ),
+            "package.json": (
+                '{{\n  "name": "{snake_name}",\n'
+                '  "scripts": {{"dev": "next dev", "build": "next build"}},\n'
+                '  "dependencies": {{"next": "^14", "react": "^18", "react-dom": "^18"}}\n}}\n'
+            ),
+            "tsconfig.json": '{{\n  "compilerOptions": {{"target": "es5", "lib": ["dom"], "jsx": "preserve", "strict": true}}\n}}\n',
+        },
+    }
+
+    async def scaffold_project(self, project_type: str, name: str,
+                                dest_dir: str = None) -> Tuple[str, str]:
+        """Create a complete project scaffold from a template."""
+        pt = project_type.lower().replace("-", "_").replace(" ", "_")
+        if pt not in self._SCAFFOLD_TEMPLATES:
+            available = ", ".join(self._SCAFFOLD_TEMPLATES.keys())
+            return "", f"Unknown project type '{project_type}'. Available: {available}"
+
+        snake_name = re.sub(r'[^a-z0-9_]+', '_', name.lower()).strip('_') or "project"
+        class_name = "".join(w.capitalize() for w in snake_name.split('_'))
+
+        template = self._SCAFFOLD_TEMPLATES[pt]
+        dest = Path(os.path.expanduser(dest_dir)).resolve() if dest_dir else (self.projects_dir / snake_name)
+        # Safety: block system paths
+        dest_str = str(dest)
+        for banned in self.risk_engine.BANNED_PATHS:
+            if dest_str.startswith(os.path.expanduser(banned)):
+                return "", f"BLOCKED: Cannot scaffold into {banned}"
+        dest.mkdir(parents=True, exist_ok=True)
+
+        created_files = []
+        for rel_path_tpl, content_tpl in template.items():
+            rel_path = rel_path_tpl.format(snake_name=snake_name, class_name=class_name, name=name)
+            content = content_tpl.format(name=name, snake_name=snake_name, class_name=class_name)
+            file_path = dest / rel_path
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(content, encoding="utf-8")
+            created_files.append(str(file_path.relative_to(dest)))
+
+        self.log_tool_call("scaffold_project", {"type": pt, "name": name}, str(dest))
+        manifest = "\n".join(f"  {f}" for f in sorted(created_files))
+        return f"Project '{name}' scaffolded at {dest}:\n{manifest}", ""
+
+    # ---- streaming terminal -----------------------------------------------
+    async def terminal_command_stream(self, command: str,
+                                       stream_callback=None,
+                                       timeout: int = 300) -> Tuple[str, str]:
+        """Run a long command with live output streaming."""
+        import asyncio
+
+        safe, reason = self.risk_engine.check_banned_paths(command)
+        if not safe:
+            return "", f"BLOCKED: {reason}"
+        level, explanation = self.risk_engine.classify_risk(command)
+        if level == "high":
+            return "", f"HIGH RISK: {explanation}. Refusing to execute."
+        if level == "medium":
+            # Allow package installs through streaming (npm/pip/brew) — they're safe and long-running
+            if re.search(r'\b(pip|npm|brew)\s+install\b', command):
+                pass  # Allow through — streaming install is the ideal use case
+            else:
+                return "", f"MEDIUM RISK: {explanation}. Use terminal_command if you need to confirm."
+
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        lines = []
+        try:
+            async def _read_all():
+                async for raw_line in proc.stdout:
+                    line = raw_line.decode("utf-8", errors="replace").rstrip()
+                    lines.append(line)
+                    if stream_callback:
+                        try:
+                            stream_callback(line)
+                        except Exception:
+                            pass
+                await proc.wait()
+            await asyncio.wait_for(_read_all(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return "\n".join(lines[-50:]), f"Timed out after {timeout}s"
+
+        output = "\n".join(lines)
+        self.log_tool_call("terminal_command_stream", {"command": command}, output[-500:])
+        exit_code = proc.returncode
+        if exit_code != 0:
+            return output[-10000:] or "(no output)", f"Exit code {exit_code}"
+        return output[-10000:] or "(completed, no output)", ""
 
     # ---- capture_screenshot (NEW: UI diagnostic tool) --------------------
     async def capture_screenshot(self, target: str = "desktop", save_path: str = None) -> Tuple[str, str]:

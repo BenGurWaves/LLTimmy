@@ -116,6 +116,7 @@ agent = AgentCore(
     scheduler=scheduler, task_mgr=task_mgr,
 )
 agent._evolution = evolution  # wire shared evolution instance for self-healing
+# NOTE: agent._stream_line_callback is wired in LLTimmyApp.__init__ after UI is built
 
 # Resolve venv Python path once for reuse
 _venv_path = BASE_DIR / ".venv" / "bin" / "python3"
@@ -183,6 +184,7 @@ class LLTimmyApp(ctk.CTk):
         self._debug_entries: List[Dict] = []  # live debug feed
         self._debug_lock = threading.Lock()
         self._warmup_done = False              # set True by warmup thread
+        self._image_cache = {}                 # prevent GC of PhotoImage refs
 
         # Load today's conversation
         self._load_chat_history()
@@ -190,6 +192,9 @@ class LLTimmyApp(ctk.CTk):
         # Build everything
         self._build_ui()
         self._start_background_threads()
+
+        # Wire streaming terminal callback to debug panel
+        agent._stream_line_callback = lambda line: self._push_debug("result", line)
 
         # Greeting
         if not self._chat_history:
@@ -996,6 +1001,24 @@ class LLTimmyApp(ctk.CTk):
                          foreground=C_TEXT_MUTED, font=("SF Mono", 10),
                          lmargin1=4, lmargin2=4, spacing1=2, spacing3=2)
         tb.tag_configure("sep", font=("SF Pro", 2))
+        # Rich rendering tags (code blocks, bold, headings)
+        tb.tag_configure("code_block",
+                         background="#1e1e1e", foreground="#c9d1d9",
+                         font=("SF Mono", 11),
+                         lmargin1=8, lmargin2=8, rmargin=8,
+                         spacing1=2, spacing3=2)
+        tb.tag_configure("code_lang",
+                         foreground=C_ACCENT, font=("SF Mono", 9, "bold"),
+                         lmargin1=8)
+        tb.tag_configure("inline_code",
+                         background="#1e1e1e", foreground="#e0e0e2",
+                         font=("SF Mono", 11))
+        tb.tag_configure("bold_text",
+                         font=("SF Pro Display", 12, "bold"),
+                         foreground=C_TEXT)
+        tb.tag_configure("heading",
+                         font=("SF Pro Display", 14, "bold"),
+                         foreground=C_TEXT, spacing1=8)
 
         # ── Suggestion chips ──────────────────────────────────────────
         sug = ctk.CTkFrame(chat, fg_color="transparent", height=34)
@@ -1050,6 +1073,15 @@ class LLTimmyApp(ctk.CTk):
             corner_radius=13, command=self._toggle_trace_panel,
         )
         self._trace_btn.pack(side="left", padx=1)
+
+        # Clipboard paste button
+        self._clip_btn = ctk.CTkButton(
+            tools_f, text="\U0001f4cb", width=26, height=26,
+            fg_color="transparent", hover_color=C_SURFACE_2,
+            text_color=C_TEXT_MUTED, font=("SF Pro", 13),
+            corner_radius=13, command=self._paste_clipboard_context,
+        )
+        self._clip_btn.pack(side="left", padx=1)
 
         # Text entry
         self._msg_input = ctk.CTkEntry(
@@ -1274,11 +1306,90 @@ class LLTimmyApp(ctk.CTk):
         return text.strip()
 
     # ══════════════════════════════════════════════════════════════════
+    #  RICH MESSAGE RENDERER — code blocks, bold, headings, images
+    # ══════════════════════════════════════════════════════════════════
+    _CODE_FENCE_RE = re.compile(r'```(\w*)\n?(.*?)```', re.DOTALL)
+
+    def _render_rich_message(self, tb, content: str, base_tag: str):
+        """Render message with code block highlighting into tk.Text widget."""
+        segments = []
+        pos = 0
+        for m in self._CODE_FENCE_RE.finditer(content):
+            pre = content[pos:m.start()]
+            if pre:
+                segments.append(("text", pre))
+            lang = m.group(1) or ""
+            code = m.group(2).rstrip()
+            segments.append((f"code:{lang}", code))
+            pos = m.end()
+        if pos < len(content):
+            segments.append(("text", content[pos:]))
+
+        for seg_type, seg_text in segments:
+            if seg_type.startswith("code:"):
+                lang = seg_type[5:]
+                if lang:
+                    tb.insert("end", f" {lang} \n", "code_lang")
+                tb.insert("end", seg_text + "\n\n", "code_block")
+            else:
+                clean = self._sanitize_chat(seg_text)
+                for line in clean.split("\n"):
+                    if not line.strip():
+                        tb.insert("end", "\n", base_tag)
+                        continue
+                    # Render bold + inline code within line
+                    parts = re.split(r'(\*\*[^*]+\*\*|`[^`\n]+`)', line)
+                    for part in parts:
+                        if part.startswith("**") and part.endswith("**"):
+                            tb.insert("end", part[2:-2], "bold_text")
+                        elif part.startswith("`") and part.endswith("`"):
+                            tb.insert("end", part[1:-1], "inline_code")
+                        elif part:
+                            tb.insert("end", part, base_tag)
+                    tb.insert("end", "\n", base_tag)
+
+    def _embed_image_in_chat(self, image_path: str):
+        """Embed a thumbnail image into the chat display.
+        Caller must ensure widget is in 'normal' state (e.g. inside _render_chat)."""
+        try:
+            from PIL import Image as PILImage, ImageTk
+            img = PILImage.open(image_path)
+            img.thumbnail((400, 300), PILImage.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            self._image_cache[image_path] = photo
+            # Don't toggle widget state — caller owns it
+            self._chat_display._textbox.image_create("end", image=photo, padx=4, pady=4)
+            self._chat_display._textbox.insert("end", "\n")
+        except ImportError:
+            logger.warning("Pillow not installed — cannot embed images")
+        except Exception as e:
+            logger.warning("Image embed failed: %s", e)
+
+    def _paste_clipboard_context(self):
+        """Read clipboard and inject into message input."""
+        try:
+            proc = subprocess.run(["pbpaste"], capture_output=True, timeout=3)
+            content = proc.stdout.decode("utf-8", errors="replace").strip()
+            content = content.replace("\n", " ").replace("\r", " ")  # CTkEntry is single-line
+            if not content:
+                return
+            current = self._msg_input.get()
+            if current:
+                self._msg_input.delete(0, "end")
+                self._msg_input.insert(0, f"{current} [Clipboard]: {content[:500]}")
+            else:
+                self._msg_input.insert(0, content[:500])
+        except Exception as e:
+            logger.warning("Clipboard paste error: %s", e)
+
+    # ══════════════════════════════════════════════════════════════════
     #  CHAT RENDERING
     # ══════════════════════════════════════════════════════════════════
     def _render_chat(self):
         self._chat_display.configure(state="normal")
         self._chat_display.delete("1.0", "end")
+
+        tb = self._chat_display._textbox
 
         for msg in self._chat_history:
             role = msg["role"]
@@ -1287,10 +1398,6 @@ class LLTimmyApp(ctk.CTk):
             # Optionally filter reasoning
             if role == "assistant" and not self._show_reasoning:
                 content = self._filter_reasoning(content)
-
-            # Always sanitize assistant output (strip HTML, markdown, code fences)
-            if role == "assistant":
-                content = self._sanitize_chat(content)
 
             if role == "user":
                 self._chat_display.insert("end", "Ben  ", "user_name")
@@ -1306,8 +1413,18 @@ class LLTimmyApp(ctk.CTk):
                 self._chat_display.insert("end", ts, "timestamp")
             self._chat_display.insert("end", "\n", "sep")
 
-            tag = "user_msg" if role == "user" else "bot_msg"
-            self._chat_display.insert("end", content + "\n", tag)
+            if role == "assistant":
+                # Rich render: code blocks, bold, inline code, image embedding
+                self._render_rich_message(tb, content, "bot_msg")
+                # Embed images found in response
+                img_paths = re.findall(
+                    r'(/[^\s]+\.(?:png|jpg|jpeg|webp|gif))', content)
+                for img_path in img_paths:
+                    if os.path.exists(img_path):
+                        self._embed_image_in_chat(img_path)
+            else:
+                self._chat_display.insert("end", content + "\n", "user_msg")
+
             self._chat_display.insert("end", "\n", "sep")
 
         self._chat_display.configure(state="disabled")
