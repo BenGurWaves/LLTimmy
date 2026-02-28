@@ -135,11 +135,19 @@ def call_llm_for_review(prompt: str, config: dict) -> dict:
                 f"Update:\n{prompt}"
             )
 
-            resp = requests.post(
-                f"{host}/api/generate",
-                json={"model": model_name, "prompt": review_prompt, "stream": False},
-                timeout=120,
-            )
+            # Retry loop for 429
+            resp = None
+            for _attempt in range(3):
+                resp = requests.post(
+                    f"{host}/api/generate",
+                    json={"model": model_name, "prompt": review_prompt, "stream": False},
+                    timeout=120,
+                )
+                if resp.status_code == 429:
+                    logger.warning("Doctor LLM review got 429 — backing off %ds", 3 * (_attempt + 1))
+                    time.sleep(3 * (_attempt + 1))
+                    continue
+                break
             resp.raise_for_status()
             response_text = resp.json().get("response", "")
 
@@ -260,16 +268,46 @@ class Doctor:
         return None
 
     def is_timmy_running(self) -> bool:
+        """Check if Timmy is running — verifies PID AND command line."""
         pid = self.get_timmy_pid()
         if pid is None:
-            return False
+            # No PID file — scan processes for app.py as fallback
+            return self._find_timmy_process() is not None
         try:
             proc = psutil.Process(pid)
-            return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+            if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+                return False
+            # Verify the process is actually Timmy (not a recycled PID)
+            cmdline = proc.cmdline()
+            return any("app.py" in arg for arg in cmdline)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return False
 
+    def _find_timmy_process(self) -> int | None:
+        """Scan all processes for a running Timmy instance. Returns PID or None."""
+        for proc in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                cmdline = proc.info.get("cmdline") or []
+                if any("app.py" in arg for arg in cmdline) and proc.pid != os.getpid():
+                    # Found a Timmy process — update PID file
+                    try:
+                        PID_FILE.write_text(str(proc.pid))
+                    except Exception:
+                        pass
+                    return proc.pid
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return None
+
     def start_timmy(self) -> str:
+        """Start Timmy, but only if no instance is already running."""
+        # Double-check: scan for existing Timmy processes first
+        existing = self._find_timmy_process()
+        if existing:
+            msg = f"Timmy already running (PID {existing}), skipping start"
+            self.log(msg)
+            return msg
+
         self.log("Starting Timmy ...")
         try:
             venv_python = str(BASE_DIR / ".venv" / "bin" / "python3")
@@ -282,6 +320,11 @@ class Doctor:
                     stdout=subprocess.DEVNULL,
                     stderr=stderr_fd,
                 )
+            # Write PID immediately so next check sees it
+            try:
+                PID_FILE.write_text(str(proc.pid))
+            except Exception:
+                pass
             msg = f"Timmy started (PID {proc.pid})"
             self.log(msg)
             self._write_project_log("Timmy Started", f"PID: {proc.pid}")
@@ -597,19 +640,25 @@ class Doctor:
     def monitor_loop(self):
         """Main watchdog loop: check Timmy every 5s, process updates."""
         self.log("Monitor loop started (5s interval)")
-        _last_restart_time = 0  # Critic #26: cooldown to prevent rapid restarts
+        _last_restart_time = 0
+        _consecutive_down = 0  # Require 2 consecutive "down" checks before restarting
         while self.monitoring:
             try:
                 _just_restarted = False
                 if not self.is_timmy_running():
+                    _consecutive_down += 1
                     now = time.time()
-                    if now - _last_restart_time > 15:  # Wait 15s between restarts
-                        self.log("Timmy not running -- auto-restarting", "ERROR")
+                    # Require 2 consecutive checks AND 30s cooldown between restarts
+                    if _consecutive_down >= 2 and now - _last_restart_time > 30:
+                        self.log("Timmy confirmed down (2 checks) -- auto-restarting", "ERROR")
                         time.sleep(1)
                         self.restart_timmy()
                         _last_restart_time = now
                         _just_restarted = True
-                        time.sleep(8)  # Give Timmy time to write PID file
+                        _consecutive_down = 0
+                        time.sleep(10)  # Give Timmy time to initialize
+                else:
+                    _consecutive_down = 0  # Reset when Timmy is confirmed alive
 
                 # Skip updates right after restart to prevent double-restart
                 if not _just_restarted:
@@ -781,15 +830,22 @@ def handle_command(message: str, history: list) -> tuple[list, str, str]:
             try:
                 model = config.get("doctor_model", "ollama/qwen3:30b").removeprefix("ollama/")
                 host = config.get("ollama_host", "http://localhost:11434")
-                resp = requests.post(
-                    f"{host}/api/generate",
-                    json={
-                        "model": model,
-                        "prompt": f"You are the Doctor, Timmy's supervisor. Ben says: {message}\nRespond helpfully and concisely.",
-                        "stream": False,
-                    },
-                    timeout=60,
-                )
+                # Retry loop for 429
+                resp = None
+                for _att in range(3):
+                    resp = requests.post(
+                        f"{host}/api/generate",
+                        json={
+                            "model": model,
+                            "prompt": f"You are the Doctor, Timmy's supervisor. Ben says: {message}\nRespond helpfully and concisely.",
+                            "stream": False,
+                        },
+                        timeout=60,
+                    )
+                    if resp.status_code == 429:
+                        time.sleep(3 * (_att + 1))
+                        continue
+                    break
                 reply = resp.json().get("response", "No response from LLM.")
             except Exception as e:
                 reply = f"LLM unavailable: {e}\nType `help` for commands."

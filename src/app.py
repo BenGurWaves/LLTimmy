@@ -38,12 +38,53 @@ sys.path.insert(0, str(BASE_DIR))
 CONFIG_PATH = BASE_DIR / "config.json"
 PID_FILE = Path("/tmp/timmy.pid")
 DOCTOR_PID_FILE = Path("/tmp/doctor.pid")
+LOCK_FILE = Path("/tmp/timmy.lock")
 MEMORY_BASE = BASE_DIR / "memory"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 logger = logging.getLogger("lltimmy")
 
-# PID file written after successful init — see __main__ block below
+
+# ---------------------------------------------------------------------------
+# Single-instance guard — prevents multiple Timmy apps from spawning
+# ---------------------------------------------------------------------------
+def _acquire_single_instance_lock() -> bool:
+    """Acquire an exclusive file lock. Returns True if we're the only instance."""
+    import fcntl
+    try:
+        # Check PID file first — if another Timmy is alive, bail immediately
+        if PID_FILE.exists():
+            try:
+                existing_pid = int(PID_FILE.read_text().strip())
+                os.kill(existing_pid, 0)  # Check if process is alive
+                # Process is alive — are we that process?
+                if existing_pid != os.getpid():
+                    logger.error("Another Timmy is already running (PID %d). Exiting.", existing_pid)
+                    return False
+            except (ProcessLookupError, PermissionError):
+                # Stale PID file — process is dead, we can take over
+                pass
+            except (ValueError, OSError):
+                pass
+
+        # Acquire exclusive file lock (non-blocking)
+        lock_fd = open(LOCK_FILE, "w")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (IOError, OSError):
+            logger.error("Cannot acquire lock file — another Timmy is running. Exiting.")
+            lock_fd.close()
+            return False
+
+        # Write our PID
+        lock_fd.write(str(os.getpid()))
+        lock_fd.flush()
+        # Keep fd open for the lifetime of the process (lock released on exit)
+        _acquire_single_instance_lock._fd = lock_fd
+        return True
+    except Exception as e:
+        logger.error("Single-instance check failed: %s", e)
+        return True  # Fail-open: allow startup if lock mechanism is broken
 
 # Load config
 try:
@@ -1643,18 +1684,14 @@ class LLTimmyApp(ctk.CTk):
                 time.sleep(30)
         threading.Thread(target=_ui_loop, daemon=True).start()
 
-        # Ollama warm-up
+        # Ollama warm-up (delayed to avoid 429 on startup)
         def _warmup():
+            time.sleep(5)  # Let main agent initialize first
             try:
-                import requests
-                host = config.get("ollama_host", "http://localhost:11434")
-                requests.post(
-                    f"{host}/api/chat",
-                    json={
-                        "model": agent.current_model,
-                        "messages": [{"role": "user", "content": "hi"}],
-                        "stream": False,
-                    },
+                agent._ollama_request_sync(
+                    {"model": agent.current_model,
+                     "messages": [{"role": "user", "content": "hi"}],
+                     "stream": False},
                     timeout=60,
                 )
                 logger.info("Ollama warm-up complete")
@@ -1663,7 +1700,19 @@ class LLTimmyApp(ctk.CTk):
         threading.Thread(target=_warmup, daemon=True).start()
 
     def _start_doctor(self):
+        """Start Doctor daemon only if not already running."""
         try:
+            # Double-check Doctor isn't already alive (psutil cmdline check)
+            import psutil
+            for proc in psutil.process_iter(["pid", "cmdline"]):
+                try:
+                    cmdline = proc.info.get("cmdline") or []
+                    if any("doctor.py" in arg for arg in cmdline):
+                        logger.info("Doctor already running (PID %d), skipping start", proc.pid)
+                        return
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
             subprocess.Popen(
                 [VENV_PYTHON, str(BASE_DIR / "doctor.py")],
                 cwd=str(BASE_DIR),
@@ -1690,6 +1739,10 @@ class LLTimmyApp(ctk.CTk):
 # Entry point
 # ═══════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
+    # Single-instance guard: prevent multiple Timmy apps from spawning
+    if not _acquire_single_instance_lock():
+        sys.exit(0)
+
     _loop_thread.start()
     app = LLTimmyApp()
     try:

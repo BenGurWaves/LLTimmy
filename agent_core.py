@@ -17,6 +17,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Global Ollama request gate — serializes all Ollama API calls to prevent 429
+# ---------------------------------------------------------------------------
+_ollama_gate = threading.Lock()
+_OLLAMA_MAX_RETRIES = 3
+_OLLAMA_RETRY_BACKOFF = [2, 5, 10]  # seconds between retries
+
 # Vision-capable model families
 VISION_MODELS = {"gemma3", "llava", "bakllava", "moondream", "llama3.2-vision", "minicpm-v"}
 
@@ -263,6 +270,38 @@ class AgentCore:
             return requests.get(f"{self.ollama_host}/api/tags", timeout=3).status_code == 200
         except Exception:
             return False
+
+    # ---- Ollama request gate (prevents 429 Too Many Requests) ----
+    def _ollama_request_sync(self, json_payload: dict, timeout: int = 120,
+                              endpoint: str = "/api/chat") -> dict:
+        """Make a non-streaming Ollama request with gate serialization and 429 retry.
+        Returns the parsed JSON response."""
+        for attempt in range(_OLLAMA_MAX_RETRIES):
+            got_429 = False
+            with _ollama_gate:
+                try:
+                    resp = requests.post(
+                        f"{self.ollama_host}{endpoint}",
+                        json=json_payload,
+                        timeout=timeout,
+                    )
+                    if resp.status_code == 429:
+                        got_429 = True
+                    else:
+                        resp.raise_for_status()
+                        return resp.json()
+                except requests.exceptions.HTTPError as e:
+                    if "429" in str(e):
+                        got_429 = True
+                    else:
+                        raise
+            # Backoff OUTSIDE the gate so other threads can proceed
+            if got_429:
+                backoff = _OLLAMA_RETRY_BACKOFF[min(attempt, len(_OLLAMA_RETRY_BACKOFF) - 1)]
+                logger.warning("Ollama 429 (attempt %d/%d) — backing off %ds",
+                               attempt + 1, _OLLAMA_MAX_RETRIES, backoff)
+                time.sleep(backoff)
+        raise requests.exceptions.HTTPError(f"Ollama 429: exhausted {_OLLAMA_MAX_RETRIES} retries")
 
     # ---- Transparency & Self-Improvement Engine ----
     def _load_transparency_log(self) -> List[Dict]:
@@ -564,23 +603,49 @@ class AgentCore:
                 return f"Tool execution error: {e}"
         return "All retry attempts exhausted."
 
-    # ---- Ollama streaming (FIXED: stop at Observation to prevent hallucinated tool results) ----
+    # ---- Ollama streaming (gated to prevent 429, stops at Observation) ----
     def _stream_ollama(self, messages: List[Dict]):
+        # Acquire global gate — only one Ollama call at a time
+        _ollama_gate.acquire()
         try:
-            resp = requests.post(
-                f"{self.ollama_host}/api/chat",
-                json={
-                    "model": self.current_model,
-                    "messages": messages,
-                    "stream": True,
-                    # CRITICAL: stop sequences prevent the LLM from fabricating tool results.
-                    # The LLM must output Thought + Action + Action Input then STOP.
-                    # The real Observation comes from actual tool execution.
-                    "options": {"stop": ["Observation:", "Observation :", "\nObservation"]},
-                },
-                stream=True, timeout=300,
-            )
-            resp.raise_for_status()
+            for attempt in range(_OLLAMA_MAX_RETRIES):
+                try:
+                    resp = requests.post(
+                        f"{self.ollama_host}/api/chat",
+                        json={
+                            "model": self.current_model,
+                            "messages": messages,
+                            "stream": True,
+                            "options": {"stop": ["Observation:", "Observation :", "\nObservation"]},
+                        },
+                        stream=True, timeout=300,
+                    )
+                    if resp.status_code == 429:
+                        backoff = _OLLAMA_RETRY_BACKOFF[min(attempt, len(_OLLAMA_RETRY_BACKOFF) - 1)]
+                        logger.warning("Ollama 429 on stream (attempt %d/%d) — retrying in %ds",
+                                       attempt + 1, _OLLAMA_MAX_RETRIES, backoff)
+                        _ollama_gate.release()
+                        time.sleep(backoff)
+                        _ollama_gate.acquire()
+                        continue
+                    resp.raise_for_status()
+                    break  # Success — proceed to streaming
+                except requests.exceptions.HTTPError as e:
+                    if "429" in str(e) and attempt < _OLLAMA_MAX_RETRIES - 1:
+                        backoff = _OLLAMA_RETRY_BACKOFF[min(attempt, len(_OLLAMA_RETRY_BACKOFF) - 1)]
+                        logger.warning("Ollama 429 on stream (attempt %d/%d) — retrying in %ds",
+                                       attempt + 1, _OLLAMA_MAX_RETRIES, backoff)
+                        _ollama_gate.release()
+                        time.sleep(backoff)
+                        _ollama_gate.acquire()
+                        continue
+                    _ollama_gate.release()
+                    yield f"\n\n**Ollama error:** {e}\n"
+                    return
+            else:
+                _ollama_gate.release()
+                yield "\n\n**Ollama error:** Too many requests (429). Try again in a moment.\n"
+                return
             buffer = ""
             buffer_count = 0
             buffer_limit = self.config.get("response_speed", {}).get("stream_buffer_tokens", 1)
@@ -617,6 +682,11 @@ class AgentCore:
             yield f"\n\n**Cannot connect to Ollama at {self.ollama_host}.**\nRun `ollama serve` to start.\n"
         except Exception as e:
             yield f"\n\n**Ollama error:** {e}\n"
+        finally:
+            try:
+                _ollama_gate.release()
+            except RuntimeError:
+                pass  # Already released in error path
 
     # ---- Main run loop ----
     async def run(self, user_message: str, file_paths: List[str] = None) -> AsyncGenerator[str, None]:
@@ -1037,18 +1107,13 @@ class AgentCore:
 
                 for model in panel_models:
                     try:
-                        resp = requests.post(
-                            f"{self.ollama_host}/api/chat",
-                            json={
-                                "model": model,
-                                "messages": [{"role": "user", "content": round_prompt}],
-                                "stream": False,
-                                "options": {"num_predict": 400},
-                            },
-                            timeout=120,
-                        )
-                        resp.raise_for_status()
-                        answer = resp.json().get("message", {}).get("content", "(no response)")
+                        result = self._ollama_request_sync({
+                            "model": model,
+                            "messages": [{"role": "user", "content": round_prompt}],
+                            "stream": False,
+                            "options": {"num_predict": 400},
+                        }, timeout=120)
+                        answer = result.get("message", {}).get("content", "(no response)")
                         all_responses[model] = answer
                     except Exception as e:
                         all_responses[model] = f"(error: {e})"
@@ -1067,17 +1132,13 @@ class AgentCore:
                 "\n\nSynthesize a brief consensus (3-5 sentences). Note agreements and key disagreements."
             )
             try:
-                synth_resp = requests.post(
-                    f"{self.ollama_host}/api/chat",
-                    json={
-                        "model": self.current_model,
-                        "messages": [{"role": "user", "content": synth_prompt}],
-                        "stream": False,
-                        "options": {"num_predict": 300},
-                    },
-                    timeout=90,
-                )
-                consensus = synth_resp.json().get("message", {}).get("content", "(no consensus)")
+                synth_result = self._ollama_request_sync({
+                    "model": self.current_model,
+                    "messages": [{"role": "user", "content": synth_prompt}],
+                    "stream": False,
+                    "options": {"num_predict": 300},
+                }, timeout=90)
+                consensus = synth_result.get("message", {}).get("content", "(no consensus)")
                 lines.append("### Consensus")
                 lines.append(consensus[:500])
             except Exception:
@@ -1169,17 +1230,13 @@ class AgentCore:
                         "Reply with ONLY the search query, nothing else."
                     )
                     try:
-                        gap_resp = requests.post(
-                            f"{self.ollama_host}/api/chat",
-                            json={
-                                "model": self.current_model,
-                                "messages": [{"role": "user", "content": gap_prompt}],
-                                "stream": False,
-                                "options": {"num_predict": 50},
-                            },
-                            timeout=30,
-                        )
-                        follow_up = gap_resp.json().get("message", {}).get("content", "").strip()
+                        gap_result = self._ollama_request_sync({
+                            "model": self.current_model,
+                            "messages": [{"role": "user", "content": gap_prompt}],
+                            "stream": False,
+                            "options": {"num_predict": 50},
+                        }, timeout=30)
+                        follow_up = gap_result.get("message", {}).get("content", "").strip()
                         if follow_up and len(follow_up) > 5:
                             query = follow_up  # Use gap-filling query for next iteration
                     except Exception:
@@ -1239,18 +1296,13 @@ class AgentCore:
                         continue
 
                 try:
-                    resp = requests.post(
-                        f"{self.ollama_host}/api/chat",
-                        json={
-                            "model": model,
-                            "messages": [{"role": "user", "content": prompt}],
-                            "stream": False,
-                            "options": {"num_predict": 500},
-                        },
-                        timeout=120,
-                    )
-                    resp.raise_for_status()
-                    answer = resp.json().get("message", {}).get("content", "(no response)")
+                    chain_result = self._ollama_request_sync({
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False,
+                        "options": {"num_predict": 500},
+                    }, timeout=120)
+                    answer = chain_result.get("message", {}).get("content", "(no response)")
                     prev_output = answer
                     results.append(f"### Step {i+1}: {model}\n**Prompt**: {prompt[:100]}...\n**Output**: {answer[:500]}")
                 except Exception as e:
@@ -1336,20 +1388,16 @@ class AgentCore:
             # 6. Generate AI suggestions
             debrief_text = "\n".join(sections)
             try:
-                suggest_resp = requests.post(
-                    f"{self.ollama_host}/api/chat",
-                    json={
-                        "model": self.current_model,
-                        "messages": [{"role": "user", "content": (
-                            f"Given this daily status:\n{debrief_text}\n\n"
-                            "Suggest 3 specific next actions Ben should take. Be brief and actionable."
-                        )}],
-                        "stream": False,
-                        "options": {"num_predict": 200},
-                    },
-                    timeout=60,
-                )
-                suggestions = suggest_resp.json().get("message", {}).get("content", "")
+                suggest_result = self._ollama_request_sync({
+                    "model": self.current_model,
+                    "messages": [{"role": "user", "content": (
+                        f"Given this daily status:\n{debrief_text}\n\n"
+                        "Suggest 3 specific next actions Ben should take. Be brief and actionable."
+                    )}],
+                    "stream": False,
+                    "options": {"num_predict": 200},
+                }, timeout=60)
+                suggestions = suggest_result.get("message", {}).get("content", "")
                 if suggestions:
                     sections.append(f"\n### Suggested Next Actions")
                     sections.append(suggestions[:400])
